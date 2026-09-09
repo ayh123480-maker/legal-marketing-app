@@ -7,3 +7,4 @@ test-frontend.js
 
 .vercel
 .env*
+.claude/
