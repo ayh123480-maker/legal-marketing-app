@@ -307,7 +307,8 @@ const state = {
     cardNews: null,               // {slides:[{no, headline, subtext, layers:[...]}]} — 완성된 카드뉴스
     projectId: null,              // 저장된 카드뉴스를 불러와 편집 중이면 그 id, 새로 만드는 중이면 null
     savedJustNow: false,
-    loading: { draft:false, card:false },
+    notionUrl: null,              // 방금 업로드한 노션 페이지 주소 (텍스트 대본만 업로드 — 이미지는 포함되지 않음)
+    loading: { draft:false, card:false, notion:false },
     error: null,
   },
 
@@ -1322,7 +1323,10 @@ function renderCardNewsBlock(p){
     ${rows}
     <div style="margin-top:14px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
       <button class="btn amber" id="download-all-cards-btn">🖼️ 전체 카드뉴스 ZIP 다운로드</button>
+      <button class="btn outline" id="upload-cardnews-notion-btn" ${p.loading.notion?"disabled":""}>${p.loading.notion?"업로드 중...":"📤 노션에 대본 업로드"}</button>
+      ${p.notionUrl ? `<a href="${p.notionUrl}" target="_blank" rel="noopener" class="banner ok" style="margin:0;">✅ 노션 페이지 열기 ↗</a>` : ""}
     </div>
+    <div class="section-note" style="margin-top:6px;">노션 업로드는 슬라이드 텍스트 대본만 올라가요 (이미지는 포함되지 않음) — 이미지는 위 ZIP 다운로드로 따로 받아서 첨부해주세요.</div>
   `;
 }
 
@@ -2828,13 +2832,34 @@ async function runCardOutlineRegeneration(){
 
 async function runCardFinalizeGeneration(){
   const p = state.cardPipeline;
-  p.loading.card = true; p.error = null; render();
+  p.loading.card = true; p.error = null; p.notionUrl = null; render();
   try{
     p.cardNews = normalizeCardNews(await generateCardNewsScript(p, p.baseContent));
   }catch(e){
     p.error = "카드뉴스 생성 중 문제가 생겼어요: " + e.message;
   }
   p.loading.card = false;
+  render();
+}
+
+/* 완성된 카드뉴스의 슬라이드 텍스트(헤드라인·서브텍스트)만 노션 페이지로 업로드 — 이미지는 포함 안 됨(ZIP으로 별도 다운로드) */
+async function runCardNewsNotionUpload(){
+  const p = state.cardPipeline;
+  if(!p.cardNews) return;
+  p.loading.notion = true; p.error = null; p.notionUrl = null; render();
+  try{
+    const title = (p.baseContent && p.baseContent.title) || "카드뉴스 대본";
+    const slides = p.cardNews.slides || [];
+    const bullets = slides.map((s,i)=> `${i+1}. ${s.headline||""}${s.subtext ? " — "+s.subtext : ""}`);
+    p.notionUrl = await callBackendNotion({
+      title,
+      body: "카드뉴스 대본 초안이에요. (이미지는 포함되지 않아요 — 완성된 이미지는 앱에서 ZIP으로 다운로드해서 따로 첨부해주세요.)",
+      extraSections: [{ heading: `🖼️ 카드뉴스 슬라이드 (${slides.length}장)`, bullets }],
+    });
+  }catch(e){
+    p.error = "노션 업로드 중 문제가 생겼어요: " + e.message;
+  }
+  p.loading.notion = false;
   render();
 }
 
@@ -2856,7 +2881,22 @@ async function runNotionUpload(){
   p.loading.notion = true; p.error = null; p.notionUrl = null; render();
   try{
     const c = p.rewrittenColumn;
-    p.notionUrl = await callBackendNotion({ title: c.title, body: c.body, keyPoints: c.keyPoints, tags: c.tags });
+    const payload = { title: c.title, body: c.body, keyPoints: c.keyPoints, tags: c.tags };
+    if(p.reelsScript){
+      const rs = p.reelsScript;
+      const sceneLines = (rs.scenes||[]).map((sc,i)=>
+        `${i+1}. [${sc.timeRange||""}] ${sc.narration||""}${sc.onScreenText ? " (자막: "+sc.onScreenText+")" : ""}`
+      );
+      payload.extraSections = [{
+        heading: "🎬 릴스 대본",
+        paragraphs: [
+          rs.hook ? "HOOK: " + rs.hook : "",
+          "길이: 약 " + (rs.durationSec||30) + "초",
+        ].filter(Boolean),
+        bullets: sceneLines.concat(rs.cta ? ["CTA: " + rs.cta] : []),
+      }];
+    }
+    p.notionUrl = await callBackendNotion(payload);
   }catch(e){
     p.error = "노션 업로드 중 문제가 생겼어요: " + e.message;
   }
@@ -2968,8 +3008,8 @@ function resetCardPipeline(){
     slideCount: state.cardPipeline.slideCount || 8,
     cardDensity: state.cardPipeline.cardDensity || "medium",
     baseContent: null, cardOutline: null, cardNews: null,
-    projectId: null, savedJustNow: false,
-    loading: { draft:false, card:false },
+    projectId: null, savedJustNow: false, notionUrl: null,
+    loading: { draft:false, card:false, notion:false },
     error: null,
   };
   render();
@@ -2986,8 +3026,8 @@ function loadCardNewsProject(id){
     baseContent: item.baseContent || null,
     cardOutline: item.cardOutline || null,
     cardNews: normalizeCardNews(item.cardNews),
-    projectId: item.id, savedJustNow: false,
-    loading: { draft:false, card:false },
+    projectId: item.id, savedJustNow: false, notionUrl: null,
+    loading: { draft:false, card:false, notion:false },
     error: null,
   };
   render();
@@ -4133,6 +4173,8 @@ function bindRouteEvents(){
     });
     const downloadAllBtn = document.getElementById("download-all-cards-btn");
     if(downloadAllBtn) downloadAllBtn.addEventListener("click", downloadAllCardsZip);
+    const uploadCardNewsNotionBtn = document.getElementById("upload-cardnews-notion-btn");
+    if(uploadCardNewsNotionBtn) uploadCardNewsNotionBtn.addEventListener("click", runCardNewsNotionUpload);
     applyDynamicFlowToVisibleCards();
   }
   if(state.route === "library"){
