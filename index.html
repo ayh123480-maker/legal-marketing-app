@@ -261,7 +261,6 @@ const state = {
   cardDefaultBgImage: null,   // 카드뉴스를 새로 만들 때 모든 슬라이드에 기본으로 깔리는 배경 이미지 (data URL)
   cardDefaultBgOpacity: 100,  // 위 기본 배경 이미지의 기본 투명도 (0~100)
   columnsSettingsOpen: false,  // 칼럼 페이지 내 글쓰기 스타일 설정 패널 펼침 여부 (저장 안 함, 세션 한정)
-  cardPageStyleSettingsOpen: false, // 카드뉴스 페이지 내 글쓰기 스타일 설정 패널 펼침 여부 (세션 한정)
   cardSettingsOpen: false,     // 카드뉴스 페이지 내 카드뉴스 설정 패널 펼침 여부 (저장 안 함, 세션 한정)
   cardBulkEditOpen: false,     // 완성된 카드뉴스 화면의 "킥커·발행주체 일괄 수정" 패널 펼침 여부 (세션 한정)
   pipeline: {
@@ -1053,14 +1052,6 @@ function renderCardNews(){
   const savedList = state.cardNewsProjects.slice().reverse().map(renderSavedCardNewsProject).join("");
 
   return `
-    <div class="card" style="padding:0;margin-bottom:16px;overflow:hidden;">
-      <div id="toggle-cardpage-style-settings" style="padding:14px 16px;display:flex;justify-content:space-between;align-items:center;cursor:pointer;">
-        <div style="font-weight:700;font-size:14px;">⚙️ 글쓰기 스타일 설정 (문체 가이드 · 템플릿)</div>
-        <div style="font-size:12px;opacity:0.6;">${state.cardPageStyleSettingsOpen ? "접기 ▲" : "펼치기 ▼"}</div>
-      </div>
-      ${state.cardPageStyleSettingsOpen ? `<div style="padding:0 16px 16px 16px;border-top:1px solid var(--line);">${renderStyleSettingsPanel()}</div>` : ""}
-    </div>
-
     <div class="banner info">⚠️ 변호사 광고 규정 참고: 승소·결과 보장, 과장된 표현은 대한변호사협회 광고규정 위반 소지가 있어요. 발행 전 소속 지방변호사회 광고심사 여부를 확인하세요.</div>
 
     <div class="section-title">1단계 · 카드뉴스로 만들 내용 입력</div>
@@ -2370,11 +2361,14 @@ function densityInstruction(density){
 }
 
 function writingPersonaPrompt(){
-  let base = `너는 금융·법률 관련 콘텐츠를 매력적이면서도 신뢰감 있게 쓰는 마케팅 카피라이터야. 아래는 어떤 주제를 다루든 항상 지켜야 하는 원칙이야.
-- 절대 금지: 결과·수익·성공·면책을 보장하거나 확정적으로 말하는 표현, 근거 없는 수치·주장, 공포심을 과도하게 자극하는 문구, "무조건", "100%", "이것만 알면" 같은 자극적 광고 문구
-- 톤: 차분하고 신뢰감 있게, 잘 정리된 정보 콘텐츠처럼 읽히게 — 광고처럼 들리지 않게
-- 대한변호사협회 변호사 광고에 관한 규정, 표시광고법 등 관련 광고 규정을 준수하는 절제된 표현만 사용
-- 원본 내용에 없는 사실이나 수치를 지어내지 말고, 주어진 소재를 충실히 반영할 것`;
+  // 아래 원칙은 문체·말투와 무관하게(정중하든 캐주얼하든 비속어가 섞이든) 예외 없이 지켜야 하는 것들만 남겨뒀다.
+  // 말투 자체를 여기서 "차분하고 단정하게"로 못박아두면 사용자가 스타일 가이드에 캐주얼한 톤을 적어도 씹혀버려서,
+  // 톤에 대한 지시는 전부 스타일 가이드/카드뉴스 스타일 프롬프트에 맡긴다.
+  let base = `너는 금융·법률 관련 콘텐츠를 쓰는 마케팅 카피라이터야. 문체·어조·말투(정중함, 캐주얼함, 반말, 비속어 섞기 등)는 아래 [글쓰기 스타일 가이드]가 있으면 그걸 그대로 따르고, 없으면 차분하고 신뢰감 있는 기본 어조로 써. 다만 문체와 무관하게 아래는 절대 어기지 마:
+- 결과·수익·성공·면책을 보장하거나 확정적으로 말하지 마 ("무조건 됩니다", "100% 가능", "이것만 알면 끝" 같은 결과 보장성 문구 금지)
+- 원본 내용에 없는 사실이나 수치를 지어내지 마 — 주어진 소재를 충실히 반영할 것
+- 실제 근거 없는 급박함을 강요하는 문구(허위 마감 압박 등)는 쓰지 마
+- 대한변호사협회 변호사 광고에 관한 규정, 표시광고법 등 관련 광고 규정에서 금지하는 표현은 피할 것`;
   if(state.styleGuide && state.styleGuide.trim()){
     base += `\n\n[우리 사무소 글쓰기 스타일 가이드 - 반드시 따를 것]\n${state.styleGuide.trim()}`;
   }
@@ -2547,7 +2541,7 @@ ${outlineBlock}
 4. 헤드라인은 한 줄로 강하게 — 15자 내외를 목표로 하되 의미가 끊기면 늘려도 됨.
 5. 슬라이드마다 문장 구조·시작 단어를 다르게 해서 반복되는 패턴("~하는 경우", "~할 수 있습니다"만 계속 반복 등)을 피해.
 6. 마지막 장은 부담스러운 강매 톤이 아니라, 지금까지 읽은 사람이 자연스럽게 상담을 신청하고 싶어지는 톤으로. 매 프로젝트마다 CTA 문구를 살짝 다르게 써서 뻔한 상투어를 피해.
-7. 승소·결과·감면액을 보장하거나 확정적으로 말하는 표현은 절대 쓰지 마. "당장 신청하세요!", "모르면 손해!", "무조건 가능합니다!", "100% 해결됩니다!", "이걸 모르면 손해!" 같은 자극적 광고 문구도 쓰지 마. 이 카드뉴스는 "광고"가 아니라 "잘 정리된 법률 전문 리포트/매거진"처럼 읽혀야 해 — 차분하고 단정한 어조를 유지해.
+7. 승소·결과·감면액을 보장하거나 확정적으로 말하는 표현은 절대 쓰지 마. "무조건 가능합니다!", "100% 해결됩니다!"처럼 결과를 보장하는 것처럼 들리는 문구는 금지야. (문체·말투 자체는 자유— 정중하든 캐주얼하든 반말·비속어가 섞이든 위 [글쓰기 스타일 가이드]/카드뉴스 스타일 프롬프트를 따르면 됨. 피해야 하는 건 "결과를 보장하는 것처럼 들리는 것"뿐이야.)
 8. 보조설명에서 서로 구분되는 포인트가 여러 개면, 문장을 이어붙이지 말고 줄바꿈으로 나눠서 각각 짧은 항목으로 적어(카드에서 항목별로 구분선을 넣어 보여줘). 포인트가 하나뿐이면 그냥 한 문단으로 적어도 돼. 모든 슬라이드를 항목 나열식으로 통일하지 말고, 내용에 따라 한 문단으로 자연스럽게 풀어 쓰는 슬라이드도 섞어서 단조롭지 않게 해.
 9. 슬라이드 안에 눈에 띄게 강조하고 싶은 핵심 수치나 한 줄 요약이 있으면(모든 슬라이드에 넣을 필요 없음, 있을 때만), 보조설명 다음 줄에 "HIGHLIGHT: 강조할 내용"을 별도로 추가해. 마지막 CTA 슬라이드는 가능하면 꼭 HIGHLIGHT 한 줄(상담 유도 문구)을 넣어. CTA 문구도 "구체적인 신청 가능 여부는 상담을 통해 확인할 수 있습니다"처럼 담백하게, 결과를 보장하는 톤은 피해.
 10. "이미지/차트 자리가 필요한 슬라이드"로 표시된 슬라이드는: 그 슬라이드가 다루는 내용 안에 실제로 항목별로 비교되는 값·조건·수치가 2개 이상 있으면(원문에 실제로 있는 것만! 지어내지 마), 보조설명 뒤에 "TABLE: 항목1=값1 | 항목2=값2 | 항목3=값3" 형식으로 그 실제 값들을 정리해서 적어. 그런 표로 정리할 만한 실제 데이터가 없으면 TABLE 줄을 절대 쓰지 말고, 그냥 보조설명만 평소보다 짧게 써서 사진이 들어갈 여백을 남겨.
@@ -3328,31 +3322,6 @@ function bindRouteEvents(){
     });
   }
   if(state.route === "cardnews"){
-    const toggleCardPageStyleBtn = document.getElementById("toggle-cardpage-style-settings");
-    if(toggleCardPageStyleBtn) toggleCardPageStyleBtn.addEventListener("click", ()=>{
-      state.cardPageStyleSettingsOpen = !state.cardPageStyleSettingsOpen;
-      render();
-    });
-    const saveStyleSettingsBtn = document.getElementById("save-style-settings-btn");
-    if(saveStyleSettingsBtn) saveStyleSettingsBtn.addEventListener("click", async ()=>{
-      await applyWritingStyleFromForm();
-      const banner = document.getElementById("style-settings-saved-banner");
-      if(banner){ banner.style.display = "inline-block"; setTimeout(()=>{ banner.style.display="none"; }, 1800); }
-    });
-    const saveTemplateBtn = document.getElementById("save-template-btn");
-    if(saveTemplateBtn) saveTemplateBtn.addEventListener("click", async ()=>{
-      const nameInput = document.getElementById("template-name-input");
-      const name = nameInput.value.trim();
-      if(!name){ alert("템플릿 이름을 입력해주세요."); return; }
-      await saveCurrentAsWritingTemplate(name);
-      render();
-    });
-    document.querySelectorAll("[data-load-writing-template]").forEach(btn=>{
-      btn.addEventListener("click", ()=> loadWritingTemplate(btn.dataset.loadWritingTemplate));
-    });
-    document.querySelectorAll("[data-delete-writing-template]").forEach(btn=>{
-      btn.addEventListener("click", ()=> deleteWritingTemplate(btn.dataset.deleteWritingTemplate));
-    });
     const toggleCardSettingsBtn = document.getElementById("toggle-cardnews-settings");
     if(toggleCardSettingsBtn) toggleCardSettingsBtn.addEventListener("click", ()=>{
       state.cardSettingsOpen = !state.cardSettingsOpen;
