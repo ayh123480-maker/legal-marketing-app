@@ -290,6 +290,7 @@ const state = {
     rewrittenColumn: null,        // {title, body, keyPoints:[], tags:[]}
     reelsScript: null,            // {hook, durationSec, scenes:[{timeRange, narration, visual, onScreenText}], cta}
     notionUrl: null,              // 방금 업로드한 노션 페이지 주소 (있으면 "노션 페이지 열기" 링크로 표시)
+    publishDateStr: "",           // 발행 예정일 (선택) — 지정하고 저장하면 콘텐츠 캘린더에도 자동 등록됨
     loading: { column:false, reels:false, notion:false },
     error: null,
   },
@@ -308,6 +309,7 @@ const state = {
     projectId: null,              // 저장된 카드뉴스를 불러와 편집 중이면 그 id, 새로 만드는 중이면 null
     savedJustNow: false,
     notionUrl: null,              // 방금 업로드한 노션 페이지 주소 (텍스트 대본만 업로드 — 이미지는 포함되지 않음)
+    publishDateStr: "",           // 발행 예정일 (선택) — 지정하고 저장하면 콘텐츠 캘린더에도 자동 등록됨
     loading: { draft:false, card:false, notion:false },
     error: null,
   },
@@ -1107,8 +1109,9 @@ function renderColumns(){
       <button class="btn amber" id="run-column-btn" ${p.loading.column?"disabled":""}>${p.loading.column?"재작성 중...":"칼럼 재작성하기"}</button>
       ${(p.rewrittenColumn||p.reelsScript) ? `<button class="btn outline" id="reset-pipeline-btn" style="margin-left:8px;">새 프로젝트 시작</button>` : ""}
       ${p.rewrittenColumn ? `
+        <input type="date" class="field" id="col-publish-date-input" style="margin-left:8px;" value="${p.publishDateStr||""}" title="발행 예정일 (선택 — 지정하고 저장하면 콘텐츠 캘린더에도 자동 등록돼요)" />
         <button class="btn amber" id="save-project-btn" style="margin-left:8px;">${p.projectId ? "💾 변경사항 저장" : "✅ 프로젝트로 저장"}</button>
-        ${p.savedJustNow ? `<span class="banner ok" style="margin-left:8px;">저장됨</span>` : ""}
+        ${p.savedJustNow ? `<span class="banner ok" style="margin-left:8px;">저장됨${p.publishDateStr ? " · 캘린더 등록됨" : ""}</span>` : ""}
       ` : ""}
     </div>
 
@@ -1170,8 +1173,9 @@ function renderCardNews(){
       <button class="btn amber" id="run-card-draft-btn" ${p.loading.draft?"disabled":""}>${p.loading.draft?"대본 초안 만드는 중...":"카드뉴스 대본 만들기"}</button>
       ${(p.cardOutline||p.cardNews) ? `<button class="btn outline" id="reset-cardpipeline-btn" style="margin-left:8px;">새 카드뉴스 시작</button>` : ""}
       ${p.cardNews ? `
+        <input type="date" class="field" id="cardnews-publish-date-input" style="margin-left:8px;" value="${p.publishDateStr||""}" title="발행 예정일 (선택 — 지정하고 저장하면 콘텐츠 캘린더에도 자동 등록돼요)" />
         <button class="btn amber" id="save-cardnews-project-btn" style="margin-left:8px;">${p.projectId ? "💾 변경사항 저장" : "✅ 카드뉴스로 저장"}</button>
-        ${p.savedJustNow ? `<span class="banner ok" style="margin-left:8px;">저장됨</span>` : ""}
+        ${p.savedJustNow ? `<span class="banner ok" style="margin-left:8px;">저장됨${p.publishDateStr ? " · 캘린더 등록됨" : ""}</span>` : ""}
       ` : ""}
     </div>
 
@@ -2985,6 +2989,23 @@ async function saveColumnProject(){
   }
   await saveColumnProjects();
   clearColumnDraftFromStorage(); // 이제 서버에 정식 저장됐으니 로컬 임시 초안은 정리
+  // 발행 예정일을 지정했으면 콘텐츠 캘린더에도 자동 등록 (비워두면 기존 등록을 정리)
+  if(p.publishDateStr){
+    await upsertContentPlan({
+      id: "cp-col-"+p.projectId,
+      dateStr: p.publishDateStr,
+      title: "📝 " + ((p.rewrittenColumn && p.rewrittenColumn.title) || "(제목 없음)"),
+      product: "",
+      contentType: "칼럼",
+      planDetail: "콘텐츠 라이브러리에서 자동 연동된 칼럼 재구성 프로젝트",
+      actualDetail: "",
+      status: "plan",
+      linkedEventId: null,
+      createdAt: now,
+    });
+  } else {
+    await removeContentPlan("cp-col-"+p.projectId);
+  }
   p.savedJustNow = true;
   render();
   setTimeout(()=>{ state.pipeline.savedJustNow = false; render(); }, 2200);
@@ -2995,7 +3016,7 @@ function resetPipeline(){
     inputMode: state.pipeline.inputMode,
     sourceUrl: "", sourceText: "",
     projectId: null, savedJustNow: false,
-    rewrittenColumn: null, reelsScript: null, notionUrl: null,
+    rewrittenColumn: null, reelsScript: null, notionUrl: null, publishDateStr: "",
     loading: { column:false, reels:false, notion:false },
     error: null,
   };
@@ -3005,6 +3026,7 @@ function resetPipeline(){
 function loadColumnProject(id){
   const item = state.columnProjects.find(x=>x.id===id);
   if(!item) return;
+  const linkedPlan = state.contentPlans.find(cp=>cp.id==="cp-col-"+id);
   state.pipeline = {
     inputMode: "text",
     sourceUrl: "", sourceText: "",
@@ -3012,6 +3034,7 @@ function loadColumnProject(id){
     rewrittenColumn: item.rewrittenColumn,
     reelsScript: item.reelsScript,
     notionUrl: null,
+    publishDateStr: (linkedPlan && linkedPlan.dateStr) || "",
     loading: { column:false, reels:false, notion:false },
     error: null,
   };
@@ -3022,6 +3045,7 @@ async function deleteColumnProject(id){
   state.columnProjects = state.columnProjects.filter(x=>x.id!==id);
   if(state.pipeline.projectId === id) state.pipeline.projectId = null;
   await saveColumnProjects();
+  await removeContentPlan("cp-col-"+id); // 연동된 캘린더 항목이 있으면 함께 정리 (없으면 조용히 무시)
   render();
 }
 
@@ -3051,6 +3075,23 @@ async function saveCardNewsProject(){
     });
   }
   await saveCardNewsProjects();
+  // 발행 예정일을 지정했으면 콘텐츠 캘린더에도 자동 등록 (비워두면 기존 등록을 정리)
+  if(p.publishDateStr){
+    await upsertContentPlan({
+      id: "cp-cn-"+p.projectId,
+      dateStr: p.publishDateStr,
+      title: "🖼️ " + ((p.baseContent && p.baseContent.title) || "(제목 없음)"),
+      product: "",
+      contentType: "카드뉴스",
+      planDetail: "콘텐츠 라이브러리에서 자동 연동된 카드뉴스 프로젝트",
+      actualDetail: "",
+      status: "plan",
+      linkedEventId: null,
+      createdAt: now,
+    });
+  } else {
+    await removeContentPlan("cp-cn-"+p.projectId);
+  }
   p.savedJustNow = true;
   render();
   setTimeout(()=>{ state.cardPipeline.savedJustNow = false; render(); }, 2200);
@@ -3063,7 +3104,7 @@ function resetCardPipeline(){
     slideCount: state.cardPipeline.slideCount || 8,
     cardDensity: state.cardPipeline.cardDensity || "medium",
     baseContent: null, cardOutline: null, cardNews: null,
-    projectId: null, savedJustNow: false, notionUrl: null,
+    projectId: null, savedJustNow: false, notionUrl: null, publishDateStr: "",
     loading: { draft:false, card:false, notion:false },
     error: null,
   };
@@ -3073,6 +3114,7 @@ function resetCardPipeline(){
 function loadCardNewsProject(id){
   const item = state.cardNewsProjects.find(x=>x.id===id);
   if(!item) return;
+  const linkedPlan = state.contentPlans.find(cp=>cp.id==="cp-cn-"+id);
   state.cardPipeline = {
     inputMode: "text",
     sourceUrl: "", sourceText: "",
@@ -3082,6 +3124,7 @@ function loadCardNewsProject(id){
     cardOutline: item.cardOutline || null,
     cardNews: normalizeCardNews(item.cardNews),
     projectId: item.id, savedJustNow: false, notionUrl: null,
+    publishDateStr: (linkedPlan && linkedPlan.dateStr) || "",
     loading: { draft:false, card:false, notion:false },
     error: null,
   };
@@ -3092,6 +3135,7 @@ async function deleteCardNewsProject(id){
   state.cardNewsProjects = state.cardNewsProjects.filter(x=>x.id!==id);
   if(state.cardPipeline.projectId === id) state.cardPipeline.projectId = null;
   await saveCardNewsProjects();
+  await removeContentPlan("cp-cn-"+id); // 연동된 캘린더 항목이 있으면 함께 정리 (없으면 조용히 무시)
   render();
 }
 
@@ -3571,6 +3615,8 @@ function bindRouteEvents(){
     if(restoreDraftBtn) restoreDraftBtn.addEventListener("click", restoreColumnDraft);
     const dismissDraftBtn = document.getElementById("dismiss-draft-btn");
     if(dismissDraftBtn) dismissDraftBtn.addEventListener("click", ()=>{ clearColumnDraftFromStorage(); render(); });
+    const colPublishDateInput = document.getElementById("col-publish-date-input");
+    if(colPublishDateInput) colPublishDateInput.addEventListener("input", ()=>{ state.pipeline.publishDateStr = colPublishDateInput.value; });
     const saveProjBtn = document.getElementById("save-project-btn");
     if(saveProjBtn) saveProjBtn.addEventListener("click", saveColumnProject);
     document.querySelectorAll("[data-load-project]").forEach(btn=>{
@@ -3652,6 +3698,8 @@ function bindRouteEvents(){
     if(runCardDraftBtn) runCardDraftBtn.addEventListener("click", runCardDraftGeneration);
     const resetCardBtn = document.getElementById("reset-cardpipeline-btn");
     if(resetCardBtn) resetCardBtn.addEventListener("click", resetCardPipeline);
+    const cardnewsPublishDateInput = document.getElementById("cardnews-publish-date-input");
+    if(cardnewsPublishDateInput) cardnewsPublishDateInput.addEventListener("input", ()=>{ state.cardPipeline.publishDateStr = cardnewsPublishDateInput.value; });
     const saveCardProjBtn = document.getElementById("save-cardnews-project-btn");
     if(saveCardProjBtn) saveCardProjBtn.addEventListener("click", saveCardNewsProject);
     document.querySelectorAll("[data-load-cardnews-project]").forEach(btn=>{
