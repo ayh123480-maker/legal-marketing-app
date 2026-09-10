@@ -1362,6 +1362,10 @@ function renderCardOutlineBlock(p){
   `;
 }
 
+function cardNewsSlidesToText(slides){
+  return (slides||[]).map((s,i)=> `${i+1}. ${s.headline||""}${s.subtext ? "\n   "+s.subtext : ""}`).join("\n\n");
+}
+
 function renderCardNewsBlock(p){
   const cn = p.cardNews;
   const brand = state.brandSettings || {};
@@ -1409,6 +1413,7 @@ function renderCardNewsBlock(p){
     ${rows}
     <div style="margin-top:14px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
       <button class="btn amber" id="download-all-cards-btn">🖼️ 전체 카드뉴스 ZIP 다운로드</button>
+      <button class="btn outline" id="copy-cardnews-btn">📋 슬라이드 텍스트 복사</button>
       <button class="btn outline" id="upload-cardnews-notion-btn" ${p.loading.notion?"disabled":""}>${p.loading.notion?"업로드 중...":"📤 노션에 대본 업로드"}</button>
       ${p.notionUrl ? `<a href="${p.notionUrl}" target="_blank" rel="noopener" class="banner ok" style="margin:0;">✅ 노션 페이지 열기 ↗</a>` : ""}
     </div>
@@ -4438,6 +4443,12 @@ function bindRouteEvents(){
     if(downloadAllBtn) downloadAllBtn.addEventListener("click", downloadAllCardsZip);
     const uploadCardNewsNotionBtn = document.getElementById("upload-cardnews-notion-btn");
     if(uploadCardNewsNotionBtn) uploadCardNewsNotionBtn.addEventListener("click", runCardNewsNotionUpload);
+    const copyCardNewsBtn = document.getElementById("copy-cardnews-btn");
+    if(copyCardNewsBtn) copyCardNewsBtn.addEventListener("click", ()=>{
+      const cn = state.cardPipeline.cardNews;
+      if(!cn) return;
+      copyTextToClipboard(cardNewsSlidesToText(cn.slides), copyCardNewsBtn);
+    });
     applyDynamicFlowToVisibleCards();
   }
   if(state.route === "library"){
