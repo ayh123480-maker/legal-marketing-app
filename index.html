@@ -1010,12 +1010,65 @@ function renderPlanModal(){
   `;
 }
 
+/* ---- 초안 자동 복구: 실수로 새로고침해도 작업 중이던 칼럼 입력이 로컬(이 브라우저)에 남아있으면 복구할 수 있게 ----
+   저장된 프로젝트(projectId 있음)를 편집 중일 때는 별도 초안을 만들지 않는다 (이미 서버에 저장되고 있으므로 중복 불필요) */
+const COLUMN_DRAFT_KEY = "mkt:columnDraftV1";
+
+function saveColumnDraftToStorage(){
+  try{
+    const p = state.pipeline;
+    if(p.projectId){ localStorage.removeItem(COLUMN_DRAFT_KEY); return; }
+    if(!p.sourceText && !p.sourceUrl && !p.rewrittenColumn){ localStorage.removeItem(COLUMN_DRAFT_KEY); return; }
+    localStorage.setItem(COLUMN_DRAFT_KEY, JSON.stringify({
+      inputMode: p.inputMode, sourceUrl: p.sourceUrl, sourceText: p.sourceText,
+      rewrittenColumn: p.rewrittenColumn, savedAt: Date.now(),
+    }));
+  }catch(e){}
+}
+
+function readColumnDraftFromStorage(){
+  try{
+    const raw = localStorage.getItem(COLUMN_DRAFT_KEY);
+    if(!raw) return null;
+    const draft = JSON.parse(raw);
+    if(!draft || (!draft.sourceText && !draft.sourceUrl && !draft.rewrittenColumn)) return null;
+    if(Date.now() - (draft.savedAt||0) > 1000*60*60*24*14) return null; // 2주 지난 초안은 무시
+    return draft;
+  }catch(e){ return null; }
+}
+
+function clearColumnDraftFromStorage(){
+  try{ localStorage.removeItem(COLUMN_DRAFT_KEY); }catch(e){}
+}
+
+function restoreColumnDraft(){
+  const draft = readColumnDraftFromStorage();
+  if(!draft) return;
+  const p = state.pipeline;
+  p.inputMode = draft.inputMode || "text";
+  p.sourceUrl = draft.sourceUrl || "";
+  p.sourceText = draft.sourceText || "";
+  p.rewrittenColumn = draft.rewrittenColumn || null;
+  clearColumnDraftFromStorage();
+  render();
+}
+
 /* ---- 칼럼 재작성 → 카드뉴스 → 릴스대본 파이프라인 ---- */
 function renderColumns(){
   const p = state.pipeline;
   const savedList = state.columnProjects.slice().reverse().map(renderSavedColumnProject).join("");
+  const isPristine = !p.projectId && !p.rewrittenColumn && !p.sourceText && !p.sourceUrl;
+  const draft = isPristine ? readColumnDraftFromStorage() : null;
+  const draftBanner = draft ? `
+    <div class="banner info" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+      💾 이전에 작성하던 칼럼 초안이 남아있어요 (${new Date(draft.savedAt).toLocaleString("ko-KR")})
+      <button class="btn amber" id="restore-draft-btn" style="font-size:11px;padding:5px 10px;">복구하기</button>
+      <button class="btn outline" id="dismiss-draft-btn" style="font-size:11px;padding:5px 10px;">닫기</button>
+    </div>
+  ` : "";
 
   return `
+    ${draftBanner}
     <div class="card" style="padding:0;margin-bottom:16px;overflow:hidden;">
       <div id="toggle-style-settings" style="padding:14px 16px;display:flex;justify-content:space-between;align-items:center;cursor:pointer;">
         <div style="font-weight:700;font-size:14px;">⚙️ 글쓰기 스타일 설정 (문체 가이드 · 템플릿)</div>
@@ -2739,6 +2792,7 @@ async function runColumnGeneration(){
   render();
   try{
     p.rewrittenColumn = await generateRewrittenColumn();
+    saveColumnDraftToStorage();
   }catch(e){
     p.error = "칼럼 재작성 중 문제가 생겼어요: " + e.message;
   }
@@ -2930,6 +2984,7 @@ async function saveColumnProject(){
     });
   }
   await saveColumnProjects();
+  clearColumnDraftFromStorage(); // 이제 서버에 정식 저장됐으니 로컬 임시 초안은 정리
   p.savedJustNow = true;
   render();
   setTimeout(()=>{ state.pipeline.savedJustNow = false; render(); }, 2200);
@@ -3497,9 +3552,9 @@ function bindRouteEvents(){
     const modeSel = document.getElementById("col-input-mode");
     if(modeSel) modeSel.addEventListener("change", ()=>{ state.pipeline.inputMode = modeSel.value; render(); });
     const urlInput = document.getElementById("col-source-url");
-    if(urlInput) urlInput.addEventListener("input", ()=>{ state.pipeline.sourceUrl = urlInput.value; });
+    if(urlInput) urlInput.addEventListener("input", ()=>{ state.pipeline.sourceUrl = urlInput.value; saveColumnDraftToStorage(); });
     const textInput = document.getElementById("col-source-text");
-    if(textInput) textInput.addEventListener("input", ()=>{ state.pipeline.sourceText = textInput.value; });
+    if(textInput) textInput.addEventListener("input", ()=>{ state.pipeline.sourceText = textInput.value; saveColumnDraftToStorage(); });
     const runColBtn = document.getElementById("run-column-btn");
     if(runColBtn) runColBtn.addEventListener("click", runColumnGeneration);
     const resetBtn = document.getElementById("reset-pipeline-btn");
@@ -3507,11 +3562,15 @@ function bindRouteEvents(){
     const reelsBtn = document.getElementById("run-reels-btn");
     if(reelsBtn) reelsBtn.addEventListener("click", runReelsGeneration);
     const rcTitleInput = document.getElementById("rc-title-input");
-    if(rcTitleInput) rcTitleInput.addEventListener("input", ()=>{ state.pipeline.rewrittenColumn.title = rcTitleInput.value; });
+    if(rcTitleInput) rcTitleInput.addEventListener("input", ()=>{ state.pipeline.rewrittenColumn.title = rcTitleInput.value; saveColumnDraftToStorage(); });
     const rcBodyTextarea = document.getElementById("rc-body-textarea");
-    if(rcBodyTextarea) rcBodyTextarea.addEventListener("input", ()=>{ state.pipeline.rewrittenColumn.body = rcBodyTextarea.value; });
+    if(rcBodyTextarea) rcBodyTextarea.addEventListener("input", ()=>{ state.pipeline.rewrittenColumn.body = rcBodyTextarea.value; saveColumnDraftToStorage(); });
     const uploadNotionBtn = document.getElementById("upload-notion-btn");
     if(uploadNotionBtn) uploadNotionBtn.addEventListener("click", runNotionUpload);
+    const restoreDraftBtn = document.getElementById("restore-draft-btn");
+    if(restoreDraftBtn) restoreDraftBtn.addEventListener("click", restoreColumnDraft);
+    const dismissDraftBtn = document.getElementById("dismiss-draft-btn");
+    if(dismissDraftBtn) dismissDraftBtn.addEventListener("click", ()=>{ clearColumnDraftFromStorage(); render(); });
     const saveProjBtn = document.getElementById("save-project-btn");
     if(saveProjBtn) saveProjBtn.addEventListener("click", saveColumnProject);
     document.querySelectorAll("[data-load-project]").forEach(btn=>{
