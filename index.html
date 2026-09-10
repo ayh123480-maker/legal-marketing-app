@@ -275,6 +275,12 @@ const state = {
   columnsSettingsOpen: false,  // 칼럼 페이지 내 글쓰기 스타일 설정 패널 펼침 여부 (저장 안 함, 세션 한정)
   cardSettingsOpen: false,     // 카드뉴스 페이지 내 카드뉴스 설정 패널 펼침 여부 (저장 안 함, 세션 한정)
   cardBulkEditOpen: false,     // 완성된 카드뉴스 화면의 "킥커·발행주체 일괄 수정" 패널 펼침 여부 (세션 한정)
+
+  // 콘텐츠 라이브러리 (저장된 칼럼·카드뉴스 프로젝트를 한 곳에서 검색·필터링하는 화면, 세션 한정 필터 상태)
+  librarySearch: "",
+  libraryTypeFilter: "all",   // all | column | cardnews
+  libraryTagFilter: null,     // 선택된 태그 (없으면 null)
+
   pipeline: {
     inputMode: "text",            // text | url
     sourceUrl: "",
@@ -636,6 +642,7 @@ const NAV = [
   { key:"content",   label:"콘텐츠 브레인스토밍" },
   { key:"columns",   label:"칼럼 재구성하기" },
   { key:"cardnews",  label:"카드뉴스 만들기" },
+  { key:"library",   label:"콘텐츠 라이브러리" },
   { key:"keywords",  label:"키워드 트렌드" },
   { key:"settings",  label:"연동 설정" },
 ];
@@ -702,6 +709,7 @@ function topbarContent(){
     content: ["콘텐츠 브레인스토밍","상품·주제 기반으로 콘텐츠 아이디어를 생성합니다"],
     columns: ["칼럼 재구성하기","원본 칼럼을 완전히 새로운 문장으로 재작성하고, 릴스 대본까지 만듭니다"],
     cardnews: ["카드뉴스 만들기","만들고 싶은 내용을 입력하면 대본 초안부터 완성본까지 만듭니다"],
+    library: ["콘텐츠 라이브러리","저장된 칼럼·카드뉴스를 검색하고 발행 현황을 한눈에 봅니다"],
     keywords: ["키워드 트렌드","최근 뜨는 키워드를 상품에 연결해 분석합니다"],
     settings: ["연동 설정","회계 앱과의 데이터 연동 상태를 확인합니다"],
   };
@@ -718,6 +726,7 @@ function routeContent(){
     case "content": return renderContent();
     case "columns": return renderColumns();
     case "cardnews": return renderCardNews();
+    case "library": return renderLibrary();
     case "keywords": return renderKeywords();
     case "settings": return renderSettings();
     default: return "";
@@ -2991,6 +3000,121 @@ async function deleteCardNewsProject(id){
   render();
 }
 
+/* ---- 콘텐츠 라이브러리: 저장된 칼럼·카드뉴스 프로젝트를 한 곳에서 검색·필터링 (읽기 전용 뷰, 기존 저장 목록과 별개) ---- */
+function libraryItems(){
+  const cols = state.columnProjects.map(item => ({
+    type: "column", id: item.id,
+    title: (item.rewrittenColumn && item.rewrittenColumn.title) || "(제목 없음)",
+    tags: (item.rewrittenColumn && item.rewrittenColumn.tags) || [],
+    createdAt: item.createdAt, updatedAt: item.updatedAt,
+    hasReels: !!item.reelsScript,
+  }));
+  const cards = state.cardNewsProjects.map(item => ({
+    type: "cardnews", id: item.id,
+    title: (item.baseContent && item.baseContent.title) || "(제목 없음)",
+    tags: [],
+    createdAt: item.createdAt, updatedAt: item.updatedAt,
+    slideCount: (item.cardNews && item.cardNews.slides && item.cardNews.slides.length) || 0,
+  }));
+  return cols.concat(cards).sort((a,b)=> new Date(b.updatedAt||b.createdAt) - new Date(a.updatedAt||a.createdAt));
+}
+
+function libraryStats(items){
+  const now = new Date();
+  const thisMonthKey = now.getFullYear()+"-"+String(now.getMonth()+1).padStart(2,"0");
+  const thisMonthCount = items.filter(it=>{
+    const d = new Date(it.createdAt);
+    return !isNaN(d) && (d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")) === thisMonthKey;
+  }).length;
+  const tagCounts = {};
+  items.forEach(it => (it.tags||[]).forEach(t=>{ tagCounts[t] = (tagCounts[t]||0)+1; }));
+  const topTags = Object.entries(tagCounts).sort((a,b)=>b[1]-a[1]).slice(0,8);
+  return {
+    total: items.length,
+    columnCount: items.filter(it=>it.type==="column").length,
+    cardnewsCount: items.filter(it=>it.type==="cardnews").length,
+    thisMonthCount, topTags,
+  };
+}
+
+function filteredLibraryItems(){
+  const q = (state.librarySearch||"").trim().toLowerCase();
+  return libraryItems().filter(it=>{
+    if(state.libraryTypeFilter!=="all" && it.type!==state.libraryTypeFilter) return false;
+    if(state.libraryTagFilter && !(it.tags||[]).includes(state.libraryTagFilter)) return false;
+    if(q && !it.title.toLowerCase().includes(q)) return false;
+    return true;
+  });
+}
+
+function renderLibraryResultRow(it){
+  const dateLabel = new Date(it.updatedAt || it.createdAt).toLocaleDateString("ko-KR");
+  const typeBadge = it.type==="column"
+    ? `<span class="badge" style="background:#eef0f4;color:var(--ink);">📝 칼럼${it.hasReels ? " · 릴스 포함" : ""}</span>`
+    : `<span class="badge" style="background:#fdf1e2;color:var(--amber);">🖼️ 카드뉴스 · ${it.slideCount}장</span>`;
+  const tagsHtml = (it.tags||[]).map(t=>`<span class="badge" style="background:#eef0f4;color:var(--ink);margin:2px 4px 0 0;">#${escapeHtml(t)}</span>`).join("");
+  return `
+    <div class="idea-card">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap;">
+        <div style="min-width:0;">
+          <div class="kw">${typeBadge} · ${dateLabel}</div>
+          <div style="font-weight:600;">${escapeHtml(it.title)}</div>
+          ${tagsHtml ? `<div style="margin-top:6px;">${tagsHtml}</div>` : ""}
+        </div>
+        <button class="btn outline" data-lib-open="${it.type}:${it.id}" style="font-size:11px;padding:5px 10px;white-space:nowrap;">열기 →</button>
+      </div>
+    </div>
+  `;
+}
+
+function renderLibraryResultsInner(){
+  const filtered = filteredLibraryItems();
+  if(filtered.length===0){
+    return `<div class="empty-state"><div class="big">🔍</div>저장된 항목이 없거나 검색 결과가 없어요.</div>`;
+  }
+  return filtered.map(renderLibraryResultRow).join("");
+}
+
+function bindLibraryResultButtons(){
+  document.querySelectorAll("[data-lib-open]").forEach(btn=>{
+    btn.addEventListener("click", ()=>{
+      const [type, id] = btn.dataset.libOpen.split(":");
+      if(type === "column"){ state.route = "columns"; loadColumnProject(id); }
+      else { state.route = "cardnews"; loadCardNewsProject(id); }
+    });
+  });
+}
+
+function renderLibrary(){
+  const items = libraryItems();
+  const stats = libraryStats(items);
+  const statCards = `
+    <div class="summary-grid" style="margin-bottom:20px;">
+      <div class="summary-card"><div class="label">전체 콘텐츠</div><div class="value">${stats.total}</div><div class="sub">칼럼 ${stats.columnCount} · 카드뉴스 ${stats.cardnewsCount}</div></div>
+      <div class="summary-card"><div class="label">이번 달 작성</div><div class="value">${stats.thisMonthCount}</div><div class="sub">${new Date().getFullYear()}년 ${new Date().getMonth()+1}월 기준</div></div>
+      <div class="summary-card"><div class="label">가장 많이 쓴 태그</div><div class="value" style="font-size:14px;">${stats.topTags.length ? stats.topTags.slice(0,3).map(([t])=>"#"+t).join(", ") : "—"}</div><div class="sub">칼럼 태그 기준</div></div>
+    </div>
+  `;
+  const tagChips = stats.topTags.map(([t,count])=>`
+    <span class="month-tab ${state.libraryTagFilter===t?'active':''}" data-lib-tag-filter="${escapeHtml(t)}">#${escapeHtml(t)} · ${count}</span>
+  `).join("");
+  return `
+    ${statCards}
+    <div class="card" style="padding:16px;margin-bottom:16px;">
+      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;${tagChips ? "margin-bottom:12px;" : ""}">
+        <input class="field" id="lib-search-input" style="flex:1;min-width:200px;" placeholder="제목으로 검색..." value="${escapeHtml(state.librarySearch||"")}" />
+        <div style="display:flex;gap:6px;">
+          <button class="btn ${state.libraryTypeFilter==='all'?'amber':'outline'}" data-lib-type-filter="all" style="font-size:12px;padding:6px 12px;">전체</button>
+          <button class="btn ${state.libraryTypeFilter==='column'?'amber':'outline'}" data-lib-type-filter="column" style="font-size:12px;padding:6px 12px;">칼럼</button>
+          <button class="btn ${state.libraryTypeFilter==='cardnews'?'amber':'outline'}" data-lib-type-filter="cardnews" style="font-size:12px;padding:6px 12px;">카드뉴스</button>
+        </div>
+      </div>
+      ${tagChips ? `<div class="month-tabs" style="margin-bottom:0;">${tagChips}${state.libraryTagFilter ? `<span class="month-tab" data-lib-tag-filter="">✕ 태그 필터 해제</span>` : ""}</div>` : ""}
+    </div>
+    <div id="lib-results">${renderLibraryResultsInner()}</div>
+  `;
+}
+
 /* ---- 키워드 트렌드 / 이 달의 수요 예측 ---- */
 function momentumBadgeClass(m){
   if(m==="상승") return "roas-good";
@@ -4010,6 +4134,25 @@ function bindRouteEvents(){
     const downloadAllBtn = document.getElementById("download-all-cards-btn");
     if(downloadAllBtn) downloadAllBtn.addEventListener("click", downloadAllCardsZip);
     applyDynamicFlowToVisibleCards();
+  }
+  if(state.route === "library"){
+    const libSearchInput = document.getElementById("lib-search-input");
+    if(libSearchInput) libSearchInput.addEventListener("input", ()=>{
+      state.librarySearch = libSearchInput.value;
+      const resultsEl = document.getElementById("lib-results");
+      if(resultsEl){ resultsEl.innerHTML = renderLibraryResultsInner(); bindLibraryResultButtons(); }
+    });
+    document.querySelectorAll("[data-lib-type-filter]").forEach(btn=>{
+      btn.addEventListener("click", ()=>{ state.libraryTypeFilter = btn.dataset.libTypeFilter; render(); });
+    });
+    document.querySelectorAll("[data-lib-tag-filter]").forEach(btn=>{
+      btn.addEventListener("click", ()=>{
+        const t = btn.dataset.libTagFilter;
+        state.libraryTagFilter = (t && t !== state.libraryTagFilter) ? t : null;
+        render();
+      });
+    });
+    bindLibraryResultButtons();
   }
   if(state.route === "keywords"){
     const runBtn = document.getElementById("run-analysis-btn");
