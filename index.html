@@ -3306,6 +3306,42 @@ function renderLibraryResultsInner(){
   return filtered.map(renderLibraryResultRow).join("");
 }
 
+function todayDateStr(){
+  const d = new Date();
+  return d.getFullYear()+"-"+pad2(d.getMonth()+1)+"-"+pad2(d.getDate());
+}
+function dateStrPlusDays(n){
+  const d = new Date();
+  d.setDate(d.getDate()+n);
+  return d.getFullYear()+"-"+pad2(d.getMonth()+1)+"-"+pad2(d.getDate());
+}
+
+function renderUpcomingPublishSection(items){
+  const today = todayDateStr();
+  const until = dateStrPlusDays(7);
+  const upcoming = items
+    .filter(it => it.publishDateStr && it.publishDateStr >= today && it.publishDateStr <= until)
+    .sort((a,b) => a.publishDateStr.localeCompare(b.publishDateStr));
+  if(!upcoming.length) return "";
+  const rows = upcoming.map(it=>{
+    const typeIcon = it.type==="column" ? "📝" : "🖼️";
+    const isToday = it.publishDateStr === today;
+    return `
+      <div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--line);">
+        <span class="badge" style="background:${isToday?'#f8e6e4':'#e5f0ec'};color:${isToday?'var(--seal)':'var(--teal)'};flex-shrink:0;">${isToday?"오늘":it.publishDateStr}</span>
+        <span style="flex:1;min-width:0;font-size:13px;">${typeIcon} ${escapeHtml(it.title)}</span>
+        <button class="btn outline" data-lib-open="${it.type}:${it.id}" style="font-size:11px;padding:4px 10px;flex-shrink:0;">열기 →</button>
+      </div>
+    `;
+  }).join("");
+  return `
+    <div class="card" style="padding:16px;margin-bottom:16px;border-left:4px solid var(--teal);">
+      <div style="font-weight:700;font-size:14px;margin-bottom:4px;">📅 다가오는 발행 일정 (7일 이내)</div>
+      ${rows}
+    </div>
+  `;
+}
+
 function bindLibraryResultButtons(){
   document.querySelectorAll("[data-lib-open]").forEach(btn=>{
     btn.addEventListener("click", ()=>{
@@ -3338,6 +3374,7 @@ function renderLibrary(){
   `).join("");
   return `
     ${statCards}
+    ${renderUpcomingPublishSection(items)}
     <div class="card" style="padding:16px;margin-bottom:16px;">
       <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;${tagChips ? "margin-bottom:12px;" : ""}">
         <input class="field" id="lib-search-input" style="flex:1;min-width:200px;" placeholder="제목으로 검색..." value="${escapeHtml(state.librarySearch||"")}" />
