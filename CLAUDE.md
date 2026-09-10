@@ -8,9 +8,10 @@
 
 **이 프로젝트의 코드를 수정하면, 사용자가 매번 요청하지 않아도 다음을 자동으로 수행할 것:**
 1. `git add -A && git commit -m "..." && git push` — GitHub 저장소(`https://github.com/ayh123480-maker/legal-marketing-app`, private)에 반영
-2. `vercel --prod --yes --cwd "D:\marketing\legal-marketing-app-v2"` — 기존 Vercel 프로젝트(`legal-marketing-app`, https://legal-marketing-app.vercel.app)에 배포
 
-사용자가 2026-09-09에 "앞으로 수정할 때마다 다 반영해줘~"라고 명시적으로 요청해서, 매번 확인받지 않고 커밋/푸시/배포를 진행해도 되는 사전 승인 상태다. (단, `.gitignore`에 걸린 `.env.local`/`.vercel` 등 비밀 정보는 절대 커밋하지 말 것 — 이미 제외되어 있음)
+2026-09-10부터 Vercel 프로젝트(`legal-marketing-app`)가 이 GitHub 저장소의 `main` 브랜치에 연결되어 있어서(`vercel git connect`), **`git push`만 하면 Vercel이 자동으로 프로덕션에 배포한다.** 따로 `vercel --prod`를 수동으로 돌릴 필요 없음 — push 후 몇 분 안에 https://legal-marketing-app.vercel.app 에 반영됨. (혹시 자동 배포가 안 되는 것 같으면 `vercel --prod --yes --cwd "D:\marketing\legal-marketing-app-v2"`로 수동 배포해도 안전함.)
+
+사용자가 2026-09-09에 "앞으로 수정할 때마다 다 반영해줘~"라고 명시적으로 요청해서, 매번 확인받지 않고 커밋/푸시(및 필요시 배포)를 진행해도 되는 사전 승인 상태다. (단, `.gitignore`에 걸린 `.env.local`/`.vercel` 등 비밀 정보는 절대 커밋하지 말 것 — 이미 제외되어 있음)
 
 ## 작업 디렉터리 이력
 
