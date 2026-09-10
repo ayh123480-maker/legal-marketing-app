@@ -1848,7 +1848,7 @@ function buildCardMarkup(slide, idx, total, category, brand, w, h, opts){
   // 상단 킥커 라벨 + 얇은 가로선 (Header)
   const topRow = `
     <div style="position:absolute;left:${pad}px;right:${pad}px;top:${pad}px;display:flex;align-items:center;gap:${Math.round(w*0.025)}px;">
-      <div style="font-family:'Pretendard','Noto Sans KR',sans-serif;font-size:${footerSize}px;font-weight:700;color:${textColor};white-space:nowrap;">${escapeHtml(kickerText)}</div>
+      <div style="font-family:'Pretendard','Noto Sans KR',sans-serif;font-size:${footerSize}px;font-weight:700;color:${textColor};white-space:nowrap;word-break:keep-all;">${escapeHtml(kickerText)}</div>
       <div style="flex:1;height:1px;background:${textColor};opacity:0.2;"></div>
     </div>
   `;
@@ -1856,14 +1856,16 @@ function buildCardMarkup(slide, idx, total, category, brand, w, h, opts){
   // 강조 요소: 본문 슬라이드는 포인트색 좌측 바(Template B), 마지막 CTA 슬라이드는 흰색 박스 안에 다크 텍스트(Template K)
   let highlightHTML = "";
   if(isCta){
+    // 박스 안 문구(강조 HIGHLIGHT 또는 태그라인)만 행동 유도 역할을 하고, 아래 보조 줄은 항상 연락처로 고정한다.
+    // (예전엔 HIGHLIGHT가 있을 때 태그라인이 보조 줄로 내려와 같은 의미의 CTA 두 개가 겹쳐 보였음)
     const boxMainText = slide.highlight || tagline;
-    const descText = slide.highlight ? tagline : phone;
+    const descText = phone;
     highlightHTML = `
       <div data-role="cta-box" style="position:absolute;left:${pad}px;right:${pad}px;top:${Math.round(h*0.62)}px;">
         <div style="background:#ffffff;border-radius:${Math.round(w*0.03)}px;padding:${Math.round(h*0.034)}px ${Math.round(w*0.06)}px;text-align:center;">
-          <div style="font-family:'Pretendard','Noto Sans KR',sans-serif;font-weight:800;font-size:${Math.round(w*0.042)}px;line-height:1.35;color:#121B27;">${escapeHtml(boxMainText)}</div>
+          <div style="font-family:'Pretendard','Noto Sans KR',sans-serif;font-weight:800;font-size:${Math.round(w*0.042)}px;line-height:1.35;color:#121B27;word-break:keep-all;">${escapeHtml(boxMainText)}</div>
         </div>
-        <div style="text-align:center;font-family:'Pretendard','Noto Sans KR',sans-serif;font-weight:600;font-size:${Math.round(w*0.028)}px;color:${accentColor};margin-top:${Math.round(h*0.02)}px;">${escapeHtml(descText)}</div>
+        <div style="text-align:center;font-family:'Pretendard','IBM Plex Mono',monospace;font-weight:600;font-size:${Math.round(w*0.028)}px;color:${accentColor};margin-top:${Math.round(h*0.02)}px;">${escapeHtml(descText)}</div>
       </div>
     `;
   } else if(slide.highlight){
@@ -1881,7 +1883,7 @@ function buildCardMarkup(slide, idx, total, category, brand, w, h, opts){
     const highlightTopPx = Math.min(Math.round(anchorFrac*h + h*0.03), Math.round(h*0.78));
     highlightHTML = `
       <div data-role="highlight" style="position:absolute;left:${pad}px;right:${pad}px;top:${highlightTopPx}px;border-left:${Math.round(w*0.012)}px solid ${accentColor};padding:${Math.round(h*0.012)}px 0 ${Math.round(h*0.012)}px ${Math.round(w*0.035)}px;">
-        <div style="font-family:'Pretendard','Noto Sans KR',sans-serif;font-weight:800;font-size:${Math.round(w*0.038)}px;line-height:1.35;color:${accentColor};">${escapeHtml(slide.highlight)}</div>
+        <div style="font-family:'Pretendard','Noto Sans KR',sans-serif;font-weight:800;font-size:${Math.round(w*0.038)}px;line-height:1.35;color:${accentColor};word-break:keep-all;">${escapeHtml(slide.highlight)}</div>
       </div>
     `;
   }
@@ -1900,7 +1902,7 @@ function buildCardMarkup(slide, idx, total, category, brand, w, h, opts){
     <div data-role="footer" style="position:absolute;left:${pad}px;right:${pad}px;bottom:${pad}px;">
       <div style="height:1px;background:${textColor};opacity:0.2;margin-bottom:${Math.round(h*0.018)}px;"></div>
       <div style="display:flex;justify-content:space-between;align-items:center;">
-        <div style="font-family:'Pretendard','Noto Sans KR',sans-serif;font-weight:800;font-size:${Math.round(footerSize*1.15)}px;letter-spacing:0.03em;color:${textColor};">${escapeHtml(org).toUpperCase()}</div>
+        <div style="font-family:'Pretendard','Noto Sans KR',sans-serif;font-weight:800;font-size:${Math.round(footerSize*1.15)}px;letter-spacing:0.03em;color:${textColor};word-break:keep-all;">${escapeHtml(org).toUpperCase()}</div>
         <div style="font-family:'Pretendard','IBM Plex Mono',monospace;font-weight:600;font-size:${footerSize}px;color:${textColor};opacity:0.75;">${escapeHtml(phone)}</div>
       </div>
     </div>
@@ -1947,7 +1949,7 @@ function buildCardMarkup(slide, idx, total, category, brand, w, h, opts){
     const boxWidth = Math.round(w*0.84);
     if(interactive && layer.id === editingLayerId){
       return `
-        <textarea data-layer-edit-box="${idx}:${layer.id}" data-role="${layer.type}" style="position:absolute;left:${layer.x}%;top:${layer.y}%;transform:translate(-50%,-50%);width:${boxWidth}px;min-height:${Math.round(fontSize*1.6)}px;text-align:${textAlign};font-family:${fontFamily};font-weight:${fontWeight};font-style:${fontStyle};text-decoration:${textDecoration};font-size:${fontSize}px;line-height:${lineHeight};color:${textFillColor};background:rgba(255,255,255,0.9);border:1.5px dashed var(--amber);border-radius:4px;padding:2px 4px;resize:none;overflow:hidden;outline:none;white-space:pre-wrap;z-index:90;">${escapeHtml(layer.text)}</textarea>
+        <textarea data-layer-edit-box="${idx}:${layer.id}" data-role="${layer.type}" style="position:absolute;left:${layer.x}%;top:${layer.y}%;transform:translate(-50%,-50%);width:${boxWidth}px;min-height:${Math.round(fontSize*1.6)}px;text-align:${textAlign};font-family:${fontFamily};font-weight:${fontWeight};font-style:${fontStyle};text-decoration:${textDecoration};font-size:${fontSize}px;line-height:${lineHeight};color:${textFillColor};background:rgba(255,255,255,0.9);border:1.5px dashed var(--amber);border-radius:4px;padding:2px 4px;resize:none;overflow:hidden;outline:none;white-space:pre-wrap;word-break:keep-all;z-index:90;">${escapeHtml(layer.text)}</textarea>
       `;
     }
     if(!layer.text) return "";
@@ -1959,16 +1961,16 @@ function buildCardMarkup(slide, idx, total, category, brand, w, h, opts){
         const rowsHTML = rawLines.map(line => `
           <div style="display:flex;align-items:flex-start;gap:${Math.round(w*0.02)}px;padding:${Math.round(h*0.007)}px 0;">
             <div style="width:${dotSize}px;height:${dotSize}px;min-width:${dotSize}px;border-radius:50%;background:${accentColor};margin-top:${Math.round(fontSize*0.45)}px;"></div>
-            <div style="flex:1;">${escapeHtml(line)}</div>
+            <div style="flex:1;word-break:keep-all;">${escapeHtml(line)}</div>
           </div>
         `).join("");
         return `
-          <div ${layerAttr(idx, layer.id)} data-role="${layer.type}" style="position:absolute;left:${layer.x}%;top:${layer.y}%;transform:translate(-50%,-50%);width:${boxWidth}px;text-align:${textAlign==='center'?'left':textAlign};font-family:${fontFamily};font-weight:${fontWeight};font-style:${fontStyle};text-decoration:${textDecoration};font-size:${fontSize}px;line-height:${lineHeight};color:${textFillColor};opacity:${opacity};background:${boxBg};border-radius:${Math.round(w*0.028)}px;padding:${Math.round(h*0.022)}px ${Math.round(w*0.04)}px;box-sizing:border-box;user-select:none;${dragAttrs}${selectOutline}">${rowsHTML}</div>
+          <div ${layerAttr(idx, layer.id)} data-role="${layer.type}" style="position:absolute;left:${layer.x}%;top:${layer.y}%;transform:translate(-50%,-50%);width:${boxWidth}px;text-align:${textAlign==='center'?'left':textAlign};font-family:${fontFamily};font-weight:${fontWeight};font-style:${fontStyle};text-decoration:${textDecoration};font-size:${fontSize}px;line-height:${lineHeight};color:${textFillColor};opacity:${opacity};background:${boxBg};border-radius:${Math.round(w*0.028)}px;padding:${Math.round(h*0.022)}px ${Math.round(w*0.04)}px;box-sizing:border-box;user-select:none;word-break:keep-all;${dragAttrs}${selectOutline}">${rowsHTML}</div>
         `;
       }
     }
     return `
-      <div ${layerAttr(idx, layer.id)} data-role="${layer.type}" style="position:absolute;left:${layer.x}%;top:${layer.y}%;transform:translate(-50%,-50%);width:${boxWidth}px;text-align:${textAlign};font-family:${fontFamily};font-weight:${fontWeight};font-style:${fontStyle};text-decoration:${textDecoration};font-size:${fontSize}px;line-height:${lineHeight};color:${textFillColor};opacity:${opacity};white-space:pre-wrap;user-select:none;${dragAttrs}${selectOutline}">${escapeHtml(layer.text)}</div>
+      <div ${layerAttr(idx, layer.id)} data-role="${layer.type}" style="position:absolute;left:${layer.x}%;top:${layer.y}%;transform:translate(-50%,-50%);width:${boxWidth}px;text-align:${textAlign};font-family:${fontFamily};font-weight:${fontWeight};font-style:${fontStyle};text-decoration:${textDecoration};font-size:${fontSize}px;line-height:${lineHeight};color:${textFillColor};opacity:${opacity};white-space:pre-wrap;word-break:keep-all;user-select:none;${dragAttrs}${selectOutline}">${escapeHtml(layer.text)}</div>
     `;
   }).join("");
 
