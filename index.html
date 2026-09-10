@@ -204,6 +204,18 @@ async function callBackendAI(prompt, useWebSearch, maxTokens){
   return data.text || "";
 }
 
+/* 재작성된 칼럼을 노션 페이지로 업로드: 실제 Notion API 키는 서버(/api/notion)에만 있다 */
+async function callBackendNotion(payload){
+  const res = await fetch("/api/notion", {
+    method:"POST", headers:{ "Content-Type":"application/json" },
+    body: JSON.stringify(payload)
+  });
+  if(res.status === 401){ redirectToLogin(); throw new Error("로그인이 필요해요."); }
+  const data = await res.json().catch(()=>({}));
+  if(!res.ok) throw new Error(data.error || "노션 업로드가 실패했어요.");
+  return data.url || "";
+}
+
 /* 로그인 여부 확인 후 아니면 로그인 페이지로. 확인되면 앱 로딩 시작 */
 async function guardSessionThenStart(){
   try{
@@ -271,7 +283,8 @@ const state = {
     savedJustNow: false,          // 방금 저장했음을 잠깐 보여주기 위한 플래그
     rewrittenColumn: null,        // {title, body, keyPoints:[], tags:[]}
     reelsScript: null,            // {hook, durationSec, scenes:[{timeRange, narration, visual, onScreenText}], cta}
-    loading: { column:false, reels:false },
+    notionUrl: null,              // 방금 업로드한 노션 페이지 주소 (있으면 "노션 페이지 열기" 링크로 표시)
+    loading: { column:false, reels:false, notion:false },
     error: null,
   },
 
@@ -1214,15 +1227,17 @@ function renderCardNewsSettingsPanel(){
 function renderRewrittenColumn(p){
   const c = p.rewrittenColumn;
   return `
-    <div class="section-title">2단계 · 재작성된 칼럼</div>
+    <div class="section-title">2단계 · 재작성된 칼럼 — 내용을 다듬은 뒤 진행하세요</div>
     <div class="card" style="padding:16px;border-left:4px solid var(--amber);">
-      <div class="serif" style="font-weight:700;font-size:16px;margin-bottom:8px;">${c.title}</div>
-      <div style="font-size:13px;line-height:1.7;white-space:pre-wrap;">${c.body}</div>
+      <input class="field serif" id="rc-title-input" style="width:100%;font-weight:700;font-size:16px;margin-bottom:8px;" value="${escapeHtml(c.title||"")}" />
+      <textarea class="field" id="rc-body-textarea" style="width:100%;min-height:240px;font-size:13px;line-height:1.7;">${escapeHtml(c.body||"")}</textarea>
       <div style="margin-top:12px;">
         ${(c.tags||[]).map(t=>`<span class="badge" style="background:#eef0f4;color:var(--ink);margin:2px 6px 2px 0;">#${t}</span>`).join("")}
       </div>
-      <div style="margin-top:16px;border-top:1px solid var(--line);padding-top:14px;">
+      <div style="margin-top:16px;border-top:1px solid var(--line);padding-top:14px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
         <button class="btn amber" id="run-reels-btn" ${p.loading.reels?"disabled":""}>${p.loading.reels?"만드는 중...":"3단계: 릴스 대본 만들기"}</button>
+        <button class="btn outline" id="upload-notion-btn" ${p.loading.notion?"disabled":""}>${p.loading.notion?"업로드 중...":"📤 노션에 새 페이지로 업로드"}</button>
+        ${p.notionUrl ? `<a href="${p.notionUrl}" target="_blank" rel="noopener" class="banner ok" style="margin:0;">✅ 노션 페이지 열기 ↗</a>` : ""}
       </div>
     </div>
   `;
@@ -2707,7 +2722,7 @@ async function runColumnGeneration(){
   if(p.inputMode==="youtube" && !p.sourceUrl.trim()){ p.error = "유튜브 영상 링크를 입력해주세요."; render(); return; }
   if(p.inputMode==="text" && !p.sourceText.trim()){ p.error = "원본 칼럼 텍스트를 입력해주세요."; render(); return; }
   p.loading.column = true;
-  p.rewrittenColumn = null; p.reelsScript = null;
+  p.rewrittenColumn = null; p.reelsScript = null; p.notionUrl = null;
   render();
   try{
     p.rewrittenColumn = await generateRewrittenColumn();
@@ -2826,6 +2841,20 @@ async function runReelsGeneration(){
   render();
 }
 
+async function runNotionUpload(){
+  const p = state.pipeline;
+  if(!p.rewrittenColumn) return;
+  p.loading.notion = true; p.error = null; p.notionUrl = null; render();
+  try{
+    const c = p.rewrittenColumn;
+    p.notionUrl = await callBackendNotion({ title: c.title, body: c.body, keyPoints: c.keyPoints, tags: c.tags });
+  }catch(e){
+    p.error = "노션 업로드 중 문제가 생겼어요: " + e.message;
+  }
+  p.loading.notion = false;
+  render();
+}
+
 async function saveColumnProject(){
   const p = state.pipeline;
   if(!p.rewrittenColumn) return;
@@ -2862,8 +2891,8 @@ function resetPipeline(){
     inputMode: state.pipeline.inputMode,
     sourceUrl: "", sourceText: "",
     projectId: null, savedJustNow: false,
-    rewrittenColumn: null, reelsScript: null,
-    loading: { column:false, reels:false },
+    rewrittenColumn: null, reelsScript: null, notionUrl: null,
+    loading: { column:false, reels:false, notion:false },
     error: null,
   };
   render();
@@ -2878,7 +2907,8 @@ function loadColumnProject(id){
     projectId: item.id, savedJustNow: false,
     rewrittenColumn: item.rewrittenColumn,
     reelsScript: item.reelsScript,
-    loading: { column:false, reels:false },
+    notionUrl: null,
+    loading: { column:false, reels:false, notion:false },
     error: null,
   };
   render();
@@ -3312,6 +3342,12 @@ function bindRouteEvents(){
     if(resetBtn) resetBtn.addEventListener("click", resetPipeline);
     const reelsBtn = document.getElementById("run-reels-btn");
     if(reelsBtn) reelsBtn.addEventListener("click", runReelsGeneration);
+    const rcTitleInput = document.getElementById("rc-title-input");
+    if(rcTitleInput) rcTitleInput.addEventListener("input", ()=>{ state.pipeline.rewrittenColumn.title = rcTitleInput.value; });
+    const rcBodyTextarea = document.getElementById("rc-body-textarea");
+    if(rcBodyTextarea) rcBodyTextarea.addEventListener("input", ()=>{ state.pipeline.rewrittenColumn.body = rcBodyTextarea.value; });
+    const uploadNotionBtn = document.getElementById("upload-notion-btn");
+    if(uploadNotionBtn) uploadNotionBtn.addEventListener("click", runNotionUpload);
     const saveProjBtn = document.getElementById("save-project-btn");
     if(saveProjBtn) saveProjBtn.addEventListener("click", saveColumnProject);
     document.querySelectorAll("[data-load-project]").forEach(btn=>{

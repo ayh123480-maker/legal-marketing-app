@@ -62,6 +62,8 @@ vercel
 | `ANTHROPIC_API_KEY` | `sk-ant-...` | 갖고 계신 Anthropic API 키 |
 | `APP_PASSWORD` | 원하는 비밀번호 | 팀원들이 로그인할 때 쓸 공유 비밀번호 |
 | `SESSION_SECRET` | 무작위 긴 문자열 | 아래 명령으로 생성 |
+| `NOTION_API_KEY` | `ntn_...` / `secret_...` | (선택) "노션에 업로드" 기능을 쓰려면 필요. 아래 "노션 연동" 참고 |
+| `NOTION_PARENT_PAGE_ID` | 페이지 URL의 32자리 ID | (선택) 새 칼럼 페이지가 만들어질 부모 페이지 |
 
 `SESSION_SECRET`은 터미널에서 이렇게 만들면 됩니다:
 ```bash
@@ -81,6 +83,19 @@ vercel --prod
 배포 주소(`https://xxxx.vercel.app`)로 접속하면 로그인 화면이 나와요. 3단계에서 설정한 `APP_PASSWORD`를 입력하면 도구가 열립니다.
 
 팀원들에게는 이 주소 + 비밀번호만 공유하면 됩니다. (개별 계정 없이 모두 같은 비밀번호로 로그인하는 구조예요.)
+
+---
+
+## 노션 연동 (선택)
+
+"칼럼 재구성하기" 화면에서 재작성된 칼럼을 다듬은 뒤, "📤 노션에 새 페이지로 업로드" 버튼을 누르면 지정한 노션 페이지 아래에 새 하위 페이지가 자동으로 만들어집니다.
+
+1. `https://www.notion.so/profile/integrations`에서 **새 통합(integration)** 만들기 → 이름 아무거나 → 생성 후 나오는 시크릿 키를 `NOTION_API_KEY`에 사용
+2. 노션에서 새 페이지들이 만들어질 부모 페이지를 하나 정하고(또는 새로 만들고), 그 페이지 우측 상단 `···` 메뉴 → **연결 추가(Connections)** → 위에서 만든 통합을 연결
+3. 그 페이지의 URL에서 하이픈 없는 32자리 문자열을 복사해 `NOTION_PARENT_PAGE_ID`에 사용 (예: `https://www.notion.so/제목-1a2b3c4d5e6f7890abcd1234ef567890` → `1a2b3c4d5e6f7890abcd1234ef567890`)
+4. Vercel 환경변수에 `NOTION_API_KEY`, `NOTION_PARENT_PAGE_ID` 추가 후 재배포
+
+두 환경변수 중 하나라도 없으면 업로드 버튼을 눌렀을 때 안내 메시지가 뜹니다 (다른 기능에는 영향 없어요).
 
 ---
 
@@ -114,6 +129,7 @@ legal-marketing-app/
     session.js    로그인 상태 확인
     storage.js    데이터 저장/조회 (Vercel KV)
     ai.js         Anthropic API 호출 (API 키는 여기에만 존재)
+    notion.js     재작성된 칼럼을 노션 페이지로 업로드 (Notion API 키는 여기에만 존재)
     fetch-url.js  칼럼 원문 URL에서 본문 텍스트 추출
     youtube-transcript.js  유튜브 영상 자막(캡션) 추출
   lib/
