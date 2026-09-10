@@ -635,6 +635,14 @@ const NAV = [
 
 function render(){
   const app = document.getElementById("app");
+  // 전체 DOM을 통째로 다시 그리기 때문에, 슬라이더처럼 짧은 간격으로 계속 render()를 호출하는
+  // 컨트롤을 조작하는 동안 스크롤 위치가 맨 위로 튕겨 올라가는 문제가 있었다. 다시 그리기 전후로
+  // 스크롤 위치를 그대로 복원해서 고친다.
+  const scrollBefore = document.scrollingElement ? document.scrollingElement.scrollTop : (document.documentElement.scrollTop || document.body.scrollTop);
+  // 카드 확대 편집 모달의 오른쪽 패널(#card-editor-panel)은 자체적으로 스크롤되는 영역이라
+  // 문서 스크롤과 별개로 위치를 기억해줘야 한다 (배경 투명도 슬라이더가 그 안에 있음).
+  const panelBefore = document.getElementById("card-editor-panel");
+  const panelScrollBefore = panelBefore ? panelBefore.scrollTop : null;
   app.innerHTML = `
     <div id="sidebar">
       <div class="brand">
@@ -671,6 +679,12 @@ function render(){
     redirectToLogin();
   });
   bindRouteEvents();
+  if(document.scrollingElement) document.scrollingElement.scrollTop = scrollBefore;
+  else { document.documentElement.scrollTop = scrollBefore; document.body.scrollTop = scrollBefore; }
+  if(panelScrollBefore != null){
+    const panelAfter = document.getElementById("card-editor-panel");
+    if(panelAfter) panelAfter.scrollTop = panelScrollBefore;
+  }
 }
 
 function topbarContent(){
@@ -1423,7 +1437,7 @@ function renderCardEditorModal(){
             ${buildCardMarkup(slide, idx, cn.slides.length, p.category, brand, W, H, {interactive:true, selectedLayerId, editingLayerId: ed.editingLayer||null})}
           </div>
         </div>
-        <div style="flex:1;min-width:260px;max-height:${H+40}px;overflow:auto;padding-right:4px;">
+        <div id="card-editor-panel" style="flex:1;min-width:260px;max-height:${H+40}px;overflow:auto;padding-right:4px;">
           <div style="font-weight:700;font-size:13px;margin-bottom:8px;">레이어</div>
           ${layerRows || `<div style="font-size:12px;opacity:0.5;margin-bottom:8px;">레이어가 없어요.</div>`}
           <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:18px;">
