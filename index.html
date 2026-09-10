@@ -1269,8 +1269,9 @@ function renderCardNewsBlock(p){
   const brand = state.brandSettings || {};
   const slides = cn.slides || [];
   const rows = slides.map((s, idx) => {
-    const hasImageLayer = (s.layers||[]).some(l=>l.type==="image");
-    const visualHint = (s.plannedVisual && !hasImageLayer) ? `<div style="font-size:11px;color:var(--amber);font-weight:700;margin-top:4px;">📌 이미지·차트 자리로 남겨둔 슬라이드예요 — 카드를 열어 이미지나 차트를 직접 추가해보세요</div>` : "";
+    const hasFilledVisual = (s.layers||[]).some(l=>(l.type==="image" && l.src) || l.type==="table");
+    const hasPlaceholder = (s.layers||[]).some(l=>l.type==="image" && !l.src);
+    const visualHint = (s.plannedVisual && hasPlaceholder) ? `<div style="font-size:11px;color:var(--amber);font-weight:700;margin-top:4px;">📌 이미지 자리를 점선 박스로 남겨뒀어요 — 카드를 열어 실제 이미지로 채워보세요</div>` : (s.plannedVisual && !hasFilledVisual ? `<div style="font-size:11px;color:var(--amber);font-weight:700;margin-top:4px;">📌 이미지·차트 자리로 남겨둔 슬라이드예요 — 카드를 열어 이미지나 차트를 직접 추가해보세요</div>` : "");
     return `
     <div class="card" style="padding:14px;margin-bottom:12px;display:flex;gap:16px;align-items:center;flex-wrap:wrap;">
       <div data-open-card-editor="${idx}" style="width:216px;height:270px;border-radius:10px;overflow:hidden;box-shadow:0 1px 4px rgba(0,0,0,0.12);flex-shrink:0;position:relative;cursor:pointer;" title="눌러서 확대 편집">
@@ -1328,25 +1329,53 @@ function renderCardEditorModal(){
     const isSelected = layer.id === selectedLayerId;
     const rowBorder = isSelected ? "border:1px solid var(--amber);" : "border:1px solid var(--line);";
     if(layer.type === "image"){
+      const isPlaceholder = !layer.src;
       const isNewStyle = layer.wFrac != null && layer.hFrac != null;
-      const imgLabel = layer.isChart ? "📊 차트/그래프" : "🖼️ 이미지";
+      const imgLabel = isPlaceholder ? "🖼️ 이미지 자리 (비어있음)" : (layer.isChart ? "📊 차트/그래프" : "🖼️ 이미지");
       return `
         <div style="${rowBorder}border-radius:8px;padding:8px;margin-bottom:8px;">
           <div style="display:flex;align-items:center;gap:8px;">
-            <img src="${layer.src}" style="width:36px;height:36px;object-fit:cover;border-radius:4px;flex-shrink:0;" />
+            ${isPlaceholder
+              ? `<div style="width:36px;height:36px;border-radius:4px;flex-shrink:0;border:1.5px dashed var(--line);display:flex;align-items:center;justify-content:center;font-size:14px;opacity:0.5;">🖼️</div>`
+              : `<img src="${layer.src}" style="width:36px;height:36px;object-fit:cover;border-radius:4px;flex-shrink:0;" />`}
             <div style="flex:1;font-size:11px;font-weight:600;">${imgLabel}${isSelected?' · 선택됨':''}</div>
             <button class="btn outline" data-select-layer="${idx}:${layer.id}" style="font-size:10px;padding:2px 6px;">선택</button>
             <button class="btn outline" data-delete-layer="${idx}:${layer.id}" style="font-size:10px;padding:2px 6px;border-color:var(--seal);color:var(--seal);">삭제</button>
           </div>
-          ${isNewStyle
-            ? `<div style="font-size:10px;opacity:0.6;margin-top:6px;">카드 미리보기에서 이 이미지를 누르면 모서리에 크기 조절 손잡이가 나타나요. 손잡이를 끌어서 크기를 바꿔보세요.</div>`
-            : `<div style="display:flex;align-items:center;gap:6px;font-size:11px;margin-top:6px;">
-                <span>크기</span>
-                <button class="btn outline" data-layer-font-adjust="${idx}:${layer.id}:-1" style="padding:2px 8px;font-size:12px;">−</button>
-                <input type="number" class="field" data-layer-scale-input="${idx}:${layer.id}" value="${Math.round((layer.scale||1)*100)}" min="30" max="600" step="1" style="width:52px;text-align:center;font-size:11px;padding:2px 4px;" />%
-                <button class="btn outline" data-layer-font-adjust="${idx}:${layer.id}:1" style="padding:2px 8px;font-size:12px;">+</button>
-              </div>`
+          ${isPlaceholder
+            ? `<div style="font-size:10px;opacity:0.6;margin-top:6px;">아래 "+ 이미지 추가"나 "이미지 검색해서 넣기"로 실제 이미지를 넣은 다음, 이 자리는 삭제하면 돼요.</div>`
+            : (isNewStyle
+              ? `<div style="font-size:10px;opacity:0.6;margin-top:6px;">카드 미리보기에서 이 이미지를 누르면 모서리에 크기 조절 손잡이가 나타나요. 손잡이를 끌어서 크기를 바꿔보세요.</div>`
+              : `<div style="display:flex;align-items:center;gap:6px;font-size:11px;margin-top:6px;">
+                  <span>크기</span>
+                  <button class="btn outline" data-layer-font-adjust="${idx}:${layer.id}:-1" style="padding:2px 8px;font-size:12px;">−</button>
+                  <input type="number" class="field" data-layer-scale-input="${idx}:${layer.id}" value="${Math.round((layer.scale||1)*100)}" min="30" max="600" step="1" style="width:52px;text-align:center;font-size:11px;padding:2px 4px;" />%
+                  <button class="btn outline" data-layer-font-adjust="${idx}:${layer.id}:1" style="padding:2px 8px;font-size:12px;">+</button>
+                </div>`)
           }
+        </div>
+      `;
+    }
+    if(layer.type === "table"){
+      const rows = layer.rows || [];
+      const rowsHTML = rows.map((r, ri) => `
+        <div style="display:flex;gap:6px;margin-bottom:6px;align-items:center;">
+          <input class="field" data-table-row-label="${idx}:${layer.id}:${ri}" style="flex:1;font-size:11px;" placeholder="항목" value="${escapeHtml(r.label||"")}" />
+          <input class="field" data-table-row-value="${idx}:${layer.id}:${ri}" style="width:90px;font-size:11px;" placeholder="값" value="${escapeHtml(r.value||"")}" />
+          <button class="btn outline" data-table-row-remove="${idx}:${layer.id}:${ri}" style="font-size:10px;padding:2px 6px;border-color:var(--seal);color:var(--seal);" ${rows.length<=1?"disabled":""}>✕</button>
+        </div>
+      `).join("");
+      return `
+        <div style="${rowBorder}border-radius:8px;padding:8px;margin-bottom:8px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+            <span style="font-size:11px;font-weight:700;opacity:0.7;">📊 표${isSelected?' · 선택됨':''}</span>
+            <div style="display:flex;gap:6px;">
+              <button class="btn outline" data-select-layer="${idx}:${layer.id}" style="font-size:10px;padding:2px 6px;">선택</button>
+              <button class="btn outline" data-delete-layer="${idx}:${layer.id}" style="font-size:10px;padding:2px 6px;border-color:var(--seal);color:var(--seal);">삭제</button>
+            </div>
+          </div>
+          ${rowsHTML}
+          <button class="btn outline" data-table-row-add="${idx}:${layer.id}" style="font-size:10px;padding:3px 8px;">+ 항목 추가</button>
         </div>
       `;
     }
@@ -1737,13 +1766,17 @@ function estimateTextHeightPx(text, fontSizePx, lineHeight, boxWidthPx){
 
 /* 카드뉴스를 새로 생성할 때, 헤드라인/보조설명 글자 수를 감안해서 서로 겹치지 않는 초기 y(%) 위치를 계산한다.
    1080x1350 기준 캔버스로 계산 (buildCardMarkup과 동일한 폰트 크기 공식을 사용) */
-function computeInitialSlideLayout(headline, subtext, isCover, isCta){
+function computeInitialSlideLayout(headline, subtext, isCover, isCta, hasVisual){
   const W = 1080, H = 1350;
   const boxWidth = W * 0.84;
   // 콘텐츠가 들어갈 수 있는 영역(밴드)의 위/아래 경계. 예전엔 항상 bandTop에서 시작해서
   // 텍스트가 적으면 카드 하단이 통째로 비어보였음 — 이제는 이 밴드 안에서 세로로 중앙 정렬한다.
   const bandTop = isCta ? H*0.30 : (isCover ? H*0.19 : H*0.185);
-  const bandBottom = isCta ? H*0.57 : (isCover ? H*0.78 : H*0.75);
+  let bandBottom = isCta ? H*0.57 : (isCover ? H*0.78 : H*0.75);
+  // 이미지·차트·표가 들어갈 슬라이드는 텍스트 밴드를 위로 줄여서 그 아래에 실제 공간을 남겨둔다.
+  // (줄이지 않으면 텍스트가 카드 하단까지 차지해버려서 이미지/표를 놓을 자리가 없어진다)
+  const visualZoneBottom = isCta ? H*0.60 : H*0.88; // 이 아래는 CTA 박스/푸터라 침범하면 안 됨
+  if(hasVisual) bandBottom = Math.max(bandTop + H*0.12, bandBottom - H*0.15);
 
   const headlineFontSize = baseFontSizeForType("headline", W, isCover, isCta);
   const headlineLineHeight = 1.18;
@@ -1765,10 +1798,18 @@ function computeInitialSlideLayout(headline, subtext, isCover, isCta){
   const subtextCenterY = contentTop + headlineH + gap + subtextH/2;
 
   const clamp = (v) => Math.max(10, Math.min(90, v));
-  return {
+  const result = {
     headlineY: clamp(Math.round((headlineCenterY / H) * 100)),
     subtextY: clamp(Math.round((subtextCenterY / H) * 100)),
   };
+  if(hasVisual){
+    // 텍스트 밴드 아래부터 CTA박스/푸터 앞까지 남은 공간의 중앙에 이미지·표 자리를 배치한다.
+    const visualTop = Math.max(bandBottom, subtextCenterY + subtextH/2 + H*0.02);
+    const visualSpace = Math.max(H*0.1, visualZoneBottom - visualTop);
+    result.visualY = clamp(Math.round(((visualTop + visualTop + visualSpace) / 2 / H) * 100));
+    result.visualHFrac = Math.max(0.12, Math.min(0.32, (visualSpace * 0.85) / H));
+  }
+  return result;
 }
 
 /* 카드 텍스트 레이어에서 고를 수 있는 폰트 목록 (value = CSS font-family) */
@@ -1924,7 +1965,18 @@ function buildCardMarkup(slide, idx, total, brand, w, h, opts){
     const selected = selectedLayerId === layer.id;
     const selectOutline = selected ? "outline:2px dashed var(--amber);outline-offset:2px;" : "";
     if(layer.type === "image"){
-      if(!layer.src) return "";
+      if(!layer.src){
+        // 이미지 자리 표시자 — "이미지·차트 넣을 자리 남기기"를 체크했지만 아직 채워지지 않은 슬라이드에 보인다.
+        const pxW = Math.round((layer.wFrac||0.6) * w);
+        const pxH = Math.round((layer.hFrac||0.45) * h);
+        const placeholderBg = isDarkColor(bg) ? "rgba(255,255,255,0.06)" : "rgba(18,28,40,0.04)";
+        return `
+          <div ${layerAttr(idx, layer.id)} style="position:absolute;left:${layer.x}%;top:${layer.y}%;transform:translate(-50%,-50%);width:${pxW}px;height:${pxH}px;border-radius:${Math.round(w*0.02)}px;border:2px dashed ${accentColor};background:${placeholderBg};display:flex;flex-direction:column;align-items:center;justify-content:center;gap:${Math.round(h*0.008)}px;box-sizing:border-box;${dragAttrs}user-select:none;${selectOutline}">
+            <div style="font-size:${Math.round(w*0.05)}px;opacity:0.5;line-height:1;">🖼️</div>
+            <div style="font-family:'Pretendard','Noto Sans KR',sans-serif;font-size:${Math.round(w*0.024)}px;color:${textColor};opacity:0.55;text-align:center;word-break:keep-all;padding:0 ${Math.round(w*0.02)}px;">이미지·차트 자리</div>
+          </div>
+        `;
+      }
       if(layer.wFrac != null && layer.hFrac != null){
         const pxW = Math.round(layer.wFrac * w);
         const pxH = Math.round(layer.hFrac * h);
@@ -1936,6 +1988,21 @@ function buildCardMarkup(slide, idx, total, brand, w, h, opts){
       const imgSize = Math.round(baseImageSize * (layer.scale || 1));
       return `
         <img ${layerAttr(idx, layer.id)} src="${layer.src}" style="position:absolute;left:${layer.x}%;top:${layer.y}%;transform:translate(-50%,-50%);width:${imgSize}px;height:auto;border-radius:${Math.round(w*0.015)}px;border:1px solid rgba(0,0,0,0.06);${dragAttrs}user-select:none;${selectOutline}" />
+      `;
+    }
+    if(layer.type === "table"){
+      // AI가 원문에서 실제로 뽑아낸 항목·값 쌍을 표처럼 보여준다 (구분선 스타일은 다중 항목 보조설명과 통일).
+      if(!layer.rows || !layer.rows.length) return "";
+      const dividerColor = isDarkColor(bg) ? "rgba(255,255,255,0.16)" : "rgba(18,28,40,0.12)";
+      const tableFontSize = Math.round(baseSubtextSize * (layer.scale || 1));
+      const rowsHTML = layer.rows.map((row, ri) => `
+        <div style="display:flex;justify-content:space-between;align-items:baseline;gap:${Math.round(w*0.025)}px;padding:${Math.round(h*0.014)}px 0;${ri < layer.rows.length-1 ? `border-bottom:1px solid ${dividerColor};` : ""}">
+          <div style="font-family:'Pretendard','Noto Sans KR',sans-serif;font-weight:700;color:${textColor};word-break:keep-all;">${escapeHtml(row.label)}</div>
+          <div style="font-family:'Pretendard','IBM Plex Mono',monospace;font-weight:700;color:${accentColor};white-space:nowrap;">${escapeHtml(row.value)}</div>
+        </div>
+      `).join("");
+      return `
+        <div ${layerAttr(idx, layer.id)} style="position:absolute;left:${layer.x}%;top:${layer.y}%;transform:translate(-50%,-50%);width:${Math.round(w*0.84)}px;font-size:${tableFontSize}px;box-sizing:border-box;user-select:none;${dragAttrs}${selectOutline}">${rowsHTML}</div>
       `;
     }
     let baseSize, fontFamily, fontWeight, opacity, lineHeight, defaultColor;
@@ -1994,7 +2061,7 @@ function buildCardMarkup(slide, idx, total, brand, w, h, opts){
   // 선택된 텍스트 레이어가 있으면(편집 중이 아닐 때) 모서리에 자유 크기 조절 핸들을 그린다
   let textResizeHandleHTML = "";
   if(interactive && selectedLayerId && selectedLayerId !== editingLayerId){
-    const selT = (slide.layers||[]).find(l=>l.id===selectedLayerId && l.type !== "image");
+    const selT = (slide.layers||[]).find(l=>l.id===selectedLayerId && l.type !== "image" && l.type !== "table");
     if(selT){
       const baseSizeT = baseFontSizeForType(selT.type, w, isCover, isCta);
       const fontSizeT = baseSizeT * (selT.scale || 1);
@@ -2009,7 +2076,7 @@ function buildCardMarkup(slide, idx, total, brand, w, h, opts){
   // 선택된 텍스트 레이어가 있으면(편집 중이 아닐 때) 그 자리 바로 위에 폰트·색·굵게/기울임/밑줄·정렬·크기 조절 툴바를 띄운다
   let textToolbarHTML = "";
   if(interactive && selectedLayerId && selectedLayerId !== editingLayerId){
-    const selText = (slide.layers||[]).find(l=>l.id===selectedLayerId && l.type !== "image");
+    const selText = (slide.layers||[]).find(l=>l.id===selectedLayerId && l.type !== "image" && l.type !== "table");
     if(selText){
       const toolbarFontOptions = FONT_OPTIONS.map(f=>`<option value="${f.value}" ${((selText.fontFamily||"")===f.value)?"selected":""}>${f.label}</option>`).join("");
       const toolbarColor = selText.color || textColor;
@@ -2076,6 +2143,17 @@ function makeImageLayer(src, naturalWidth, naturalHeight){
   return {
     id: "img-"+Date.now()+"-"+Math.random().toString(36).slice(2,6),
     type: "image", src, x: 50, y: 50, wFrac, hFrac, aspect,
+  };
+}
+
+/* 카드뉴스 대본 초안 단계에서 "이미지·차트 넣을 자리 남기기"를 체크했는데 AI가 실제 표로 뽑을 데이터를
+   못 찾은 슬라이드에 자동으로 들어가는, 아직 채워지지 않은 이미지 자리(점선 박스). src가 없는 것만 다르고
+   나머지는 일반 이미지 레이어와 동일해서 드래그로 위치를 옮길 수 있다 — 실제로 채우려면 이 레이어를
+   지우고 "+ 이미지 추가"나 이미지 검색으로 새로 넣으면 된다. */
+function makePlaceholderImageLayer(){
+  return {
+    id: "img-"+Date.now()+"-"+Math.random().toString(36).slice(2,6),
+    type: "image", src: null, x: 50, y: 80, wFrac: 0.6, hFrac: 0.45, aspect: 0.75,
   };
 }
 
@@ -2449,7 +2527,7 @@ async function generateCardNewsScript(p, c){
 
   const roleLabel = (role) => role==="cover" ? "표지" : (role==="cta" ? "CTA" : "본문");
   const outlineBlock = outline
-    ? `아래는 이미 확정된 슬라이드별 구성안이야. 반드시 이 순서와 내용 배정을 그대로 따르고, 각 슬라이드는 자신에게 배정된 내용만 다뤄:\n${outline.map(o=>`${o.no}번(${roleLabel(o.role)}${o.hasVisual? ", 이미지/도표가 들어갈 슬라이드라 텍스트는 짧게 여백을 남길 것":""}): ${o.topic ? o.topic : "(내용 미정 - 앞뒤 흐름에 맞게 알아서 채워줘)"}`).join("\n")}`
+    ? `아래는 이미 확정된 슬라이드별 구성안이야. 반드시 이 순서와 내용 배정을 그대로 따르고, 각 슬라이드는 자신에게 배정된 내용만 다뤄:\n${outline.map(o=>`${o.no}번(${roleLabel(o.role)}${o.hasVisual? ", 이미지/차트 자리가 필요한 슬라이드":""}): ${o.topic ? o.topic : "(내용 미정 - 앞뒤 흐름에 맞게 알아서 채워줘)"}`).join("\n")}`
     : `1번 슬라이드는 시선을 끄는 표지, ${count}번(마지막) 슬라이드는 상담 유도 CTA로, 반드시 ${count}장을 모두 채워.`;
 
   const prompt = `너는 인스타그램 법률 마케팅 카드뉴스만 수백 건 만들어본 베테랑 카피라이터야. ${persona}${customPromptBlock}
@@ -2472,8 +2550,9 @@ ${outlineBlock}
 7. 승소·결과·감면액을 보장하거나 확정적으로 말하는 표현은 절대 쓰지 마. "당장 신청하세요!", "모르면 손해!", "무조건 가능합니다!", "100% 해결됩니다!", "이걸 모르면 손해!" 같은 자극적 광고 문구도 쓰지 마. 이 카드뉴스는 "광고"가 아니라 "잘 정리된 법률 전문 리포트/매거진"처럼 읽혀야 해 — 차분하고 단정한 어조를 유지해.
 8. 보조설명에서 서로 구분되는 포인트가 여러 개면, 문장을 이어붙이지 말고 줄바꿈으로 나눠서 각각 짧은 항목으로 적어(카드에서 항목별로 구분선을 넣어 보여줘). 포인트가 하나뿐이면 그냥 한 문단으로 적어도 돼. 모든 슬라이드를 항목 나열식으로 통일하지 말고, 내용에 따라 한 문단으로 자연스럽게 풀어 쓰는 슬라이드도 섞어서 단조롭지 않게 해.
 9. 슬라이드 안에 눈에 띄게 강조하고 싶은 핵심 수치나 한 줄 요약이 있으면(모든 슬라이드에 넣을 필요 없음, 있을 때만), 보조설명 다음 줄에 "HIGHLIGHT: 강조할 내용"을 별도로 추가해. 마지막 CTA 슬라이드는 가능하면 꼭 HIGHLIGHT 한 줄(상담 유도 문구)을 넣어. CTA 문구도 "구체적인 신청 가능 여부는 상담을 통해 확인할 수 있습니다"처럼 담백하게, 결과를 보장하는 톤은 피해.
+10. "이미지/차트 자리가 필요한 슬라이드"로 표시된 슬라이드는: 그 슬라이드가 다루는 내용 안에 실제로 항목별로 비교되는 값·조건·수치가 2개 이상 있으면(원문에 실제로 있는 것만! 지어내지 마), 보조설명 뒤에 "TABLE: 항목1=값1 | 항목2=값2 | 항목3=값3" 형식으로 그 실제 값들을 정리해서 적어. 그런 표로 정리할 만한 실제 데이터가 없으면 TABLE 줄을 절대 쓰지 말고, 그냥 보조설명만 평소보다 짧게 써서 사진이 들어갈 여백을 남겨.
 
-출력은 아래 형식을 정확히 그대로 따라서 작성해. JSON이나 마크다운, 다른 설명 없이 이 형식만 출력해. 각 슬라이드는 "###SLIDE###" 한 줄로 시작하고, 그 다음 줄에 헤드라인 한 줄, 그 다음 줄부터 보조설명(그리고 필요하면 HIGHLIGHT 줄)을 적어. 모든 슬라이드가 끝나면 마지막에 "###END###"를 적어.
+출력은 아래 형식을 정확히 그대로 따라서 작성해. JSON이나 마크다운, 다른 설명 없이 이 형식만 출력해. 각 슬라이드는 "###SLIDE###" 한 줄로 시작하고, 그 다음 줄에 헤드라인 한 줄, 그 다음 줄부터 보조설명(그리고 필요하면 HIGHLIGHT 줄, 그리고 위 10번 조건에 맞으면 TABLE 줄)을 적어. 모든 슬라이드가 끝나면 마지막에 "###END###"를 적어.
 
 [제목]
 ${c.title}
@@ -2487,6 +2566,7 @@ ${c.body}
 보조설명 포인트 1
 보조설명 포인트 2
 HIGHLIGHT: 강조할 한 줄 (있을 때만)
+TABLE: 항목1=값1 | 항목2=값2 (이미지/차트 자리 슬라이드에서 실제 비교 데이터가 있을 때만)
 ###SLIDE###
 다음 헤드라인
 다음 보조설명
@@ -2502,10 +2582,21 @@ HIGHLIGHT: 강조할 한 줄 (있을 때만)
     const headline = (lines[0]||"").trim();
     const bodyLines = [];
     let highlight = "";
+    let tableRows = null;
     for(let i=1;i<lines.length;i++){
       const trimmedLine = lines[i].trim();
       if(/^HIGHLIGHT:/i.test(trimmedLine)){
         highlight = trimmedLine.replace(/^HIGHLIGHT:/i, "").trim();
+      } else if(/^TABLE:/i.test(trimmedLine)){
+        // "항목1=값1 | 항목2=값2" 형식을 파싱. 원문에 실제 있는 값만 AI가 넣도록 프롬프트에서 지시했음 — 여기서 지어내지 않는다.
+        const pairs = trimmedLine.replace(/^TABLE:/i, "").trim().split("|")
+          .map(seg => {
+            const eqIdx = seg.indexOf("=");
+            if(eqIdx < 0) return null;
+            return { label: seg.slice(0, eqIdx).trim(), value: seg.slice(eqIdx+1).trim() };
+          })
+          .filter(row => row && row.label && row.value);
+        if(pairs.length) tableRows = pairs;
       } else {
         bodyLines.push(lines[i]);
       }
@@ -2514,15 +2605,31 @@ HIGHLIGHT: 강조할 한 줄 (있을 때만)
     const isCta = idx === count-1;
     const align = isCta ? "center" : "left";
     const hasVisual = outline && outline[idx] ? !!outline[idx].hasVisual : false;
-    const layout = computeInitialSlideLayout(headline, subtext, idx===0, isCta);
+    const layout = computeInitialSlideLayout(headline, subtext, idx===0, isCta, hasVisual);
+    const layers = [
+      { id:"headline", type:"headline", text: headline, x:50, y: layout.headlineY, scale:1, align },
+      { id:"subtext", type:"subtext", text: subtext, x:50, y: layout.subtextY, scale:1, align },
+    ];
+    // "이미지/차트 자리가 필요한 슬라이드"인데 아직 이미지가 없으면: 실제 데이터로 뽑아낸 표가 있으면 표를 자동으로 넣고,
+    // 없으면 사진을 나중에 채워 넣을 자리(점선 박스)를 시각적으로 남겨서 체크 여부가 카드에 실제로 드러나게 한다.
+    // computeInitialSlideLayout이 텍스트 밴드를 미리 줄여둬서 여기 아래에 실제로 겹치지 않는 공간이 있다.
+    if(hasVisual){
+      const visualY = layout.visualY || 82;
+      if(tableRows){
+        layers.push({ id:"table-"+Date.now()+"-"+Math.random().toString(36).slice(2,6), type:"table", rows: tableRows, x:50, y:visualY, scale:1 });
+      } else {
+        const ph = makePlaceholderImageLayer();
+        ph.y = visualY;
+        ph.hFrac = layout.visualHFrac || 0.22;
+        ph.wFrac = Math.min(0.84, ph.hFrac / 0.7);
+        layers.push(ph);
+      }
+    }
     return {
       no: idx+1, headline, subtext, highlight, plannedVisual: hasVisual,
       bgImage: state.cardDefaultBgImage || null,
       bgImageOpacity: state.cardDefaultBgImage ? (state.cardDefaultBgOpacity!=null?state.cardDefaultBgOpacity:100) : null,
-      layers: [
-        { id:"headline", type:"headline", text: headline, x:50, y: layout.headlineY, scale:1, align },
-        { id:"subtext", type:"subtext", text: subtext, x:50, y: layout.subtextY, scale:1, align },
-      ],
+      layers,
     };
   });
   // 혹시 모자라게 나오면 빈 슬라이드로 채워서 사용자가 지정한 장수를 맞춘다 (직접 텍스트를 채워넣으면 됨)
@@ -3522,7 +3629,7 @@ function bindRouteEvents(){
         const slide = state.cardPipeline.cardNews && state.cardPipeline.cardNews.slides[idx];
         if(!slide) return;
         const layer = (slide.layers||[]).find(l=>l.id===layerId);
-        if(!layer || layer.type === "image") return; // 이미지는 인라인 텍스트 편집 대상이 아님
+        if(!layer || layer.type === "image" || layer.type === "table") return; // 이미지·표는 인라인 텍스트 편집 대상이 아님
         if(!state.cardEditor) return;
         state.cardEditor.selectedLayer = layerId;
         state.cardEditor.editingLayer = layerId;
@@ -3863,6 +3970,38 @@ function bindRouteEvents(){
     });
     const chartBuilderAddBtn = document.getElementById("chart-builder-add-btn");
     if(chartBuilderAddBtn) chartBuilderAddBtn.addEventListener("click", addChartLayerFromBuilder);
+    document.querySelectorAll("[data-table-row-label]").forEach(inp=>{
+      inp.addEventListener("change", ()=>{
+        const [idxStr, layerId, riStr] = inp.dataset.tableRowLabel.split(":");
+        const slide = state.cardPipeline.cardNews && state.cardPipeline.cardNews.slides[Number(idxStr)];
+        const layer = slide && (slide.layers||[]).find(l=>l.id===layerId);
+        if(layer && layer.rows && layer.rows[Number(riStr)]) layer.rows[Number(riStr)].label = inp.value;
+      });
+    });
+    document.querySelectorAll("[data-table-row-value]").forEach(inp=>{
+      inp.addEventListener("change", ()=>{
+        const [idxStr, layerId, riStr] = inp.dataset.tableRowValue.split(":");
+        const slide = state.cardPipeline.cardNews && state.cardPipeline.cardNews.slides[Number(idxStr)];
+        const layer = slide && (slide.layers||[]).find(l=>l.id===layerId);
+        if(layer && layer.rows && layer.rows[Number(riStr)]) layer.rows[Number(riStr)].value = inp.value;
+      });
+    });
+    document.querySelectorAll("[data-table-row-remove]").forEach(btn=>{
+      btn.addEventListener("click", ()=>{
+        const [idxStr, layerId, riStr] = btn.dataset.tableRowRemove.split(":");
+        const slide = state.cardPipeline.cardNews && state.cardPipeline.cardNews.slides[Number(idxStr)];
+        const layer = slide && (slide.layers||[]).find(l=>l.id===layerId);
+        if(layer && layer.rows && layer.rows.length>1){ layer.rows.splice(Number(riStr),1); render(); }
+      });
+    });
+    document.querySelectorAll("[data-table-row-add]").forEach(btn=>{
+      btn.addEventListener("click", ()=>{
+        const [idxStr, layerId] = btn.dataset.tableRowAdd.split(":");
+        const slide = state.cardPipeline.cardNews && state.cardPipeline.cardNews.slides[Number(idxStr)];
+        const layer = slide && (slide.layers||[]).find(l=>l.id===layerId);
+        if(layer){ if(!layer.rows) layer.rows = []; layer.rows.push({label:"",value:""}); render(); }
+      });
+    });
     const downloadAllBtn = document.getElementById("download-all-cards-btn");
     if(downloadAllBtn) downloadAllBtn.addEventListener("click", downloadAllCardsZip);
     applyDynamicFlowToVisibleCards();
