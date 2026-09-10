@@ -3147,6 +3147,7 @@ function libraryItems(){
     tags: (item.rewrittenColumn && item.rewrittenColumn.tags) || [],
     createdAt: item.createdAt, updatedAt: item.updatedAt,
     hasReels: !!item.reelsScript,
+    publishDateStr: (state.contentPlans.find(cp=>cp.id==="cp-col-"+item.id)||{}).dateStr || "",
   }));
   const cards = state.cardNewsProjects.map(item => ({
     type: "cardnews", id: item.id,
@@ -3154,8 +3155,37 @@ function libraryItems(){
     tags: [],
     createdAt: item.createdAt, updatedAt: item.updatedAt,
     slideCount: (item.cardNews && item.cardNews.slides && item.cardNews.slides.length) || 0,
+    publishDateStr: (state.contentPlans.find(cp=>cp.id==="cp-cn-"+item.id)||{}).dateStr || "",
   }));
   return cols.concat(cards).sort((a,b)=> new Date(b.updatedAt||b.createdAt) - new Date(a.updatedAt||a.createdAt));
+}
+
+function libraryItemsToCsv(items){
+  const escapeCsv = (v) => `"${String(v==null?"":v).replace(/"/g,'""')}"`;
+  const header = ["유형","제목","태그","발행예정일","작성일","수정일"];
+  const rows = items.map(it => [
+    it.type==="column" ? "칼럼" : "카드뉴스",
+    it.title,
+    (it.tags||[]).join(" "),
+    it.publishDateStr||"",
+    it.createdAt ? new Date(it.createdAt).toLocaleDateString("ko-KR") : "",
+    it.updatedAt ? new Date(it.updatedAt).toLocaleDateString("ko-KR") : "",
+  ]);
+  return [header].concat(rows).map(r=>r.map(escapeCsv).join(",")).join("\r\n");
+}
+
+function downloadLibraryCsv(){
+  const items = filteredLibraryItems();
+  const csv = "﻿" + libraryItemsToCsv(items); // BOM 포함 — 엑셀에서 한글 깨짐 방지
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "콘텐츠_라이브러리_" + new Date().toISOString().slice(0,10) + ".csv";
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
 }
 
 function libraryStats(items){
@@ -3191,16 +3221,20 @@ function renderLibraryResultRow(it){
   const typeBadge = it.type==="column"
     ? `<span class="badge" style="background:#eef0f4;color:var(--ink);">📝 칼럼${it.hasReels ? " · 릴스 포함" : ""}</span>`
     : `<span class="badge" style="background:#fdf1e2;color:var(--amber);">🖼️ 카드뉴스 · ${it.slideCount}장</span>`;
+  const publishBadge = it.publishDateStr ? `<span class="badge" style="background:#e5f0ec;color:var(--teal);">📅 발행예정 ${it.publishDateStr}</span>` : "";
   const tagsHtml = (it.tags||[]).map(t=>`<span class="badge" style="background:#eef0f4;color:var(--ink);margin:2px 4px 0 0;">#${escapeHtml(t)}</span>`).join("");
   return `
     <div class="idea-card">
       <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap;">
         <div style="min-width:0;">
-          <div class="kw">${typeBadge} · ${dateLabel}</div>
+          <div class="kw">${typeBadge}${publishBadge ? " " + publishBadge : ""} · ${dateLabel}</div>
           <div style="font-weight:600;">${escapeHtml(it.title)}</div>
           ${tagsHtml ? `<div style="margin-top:6px;">${tagsHtml}</div>` : ""}
         </div>
-        <button class="btn outline" data-lib-open="${it.type}:${it.id}" style="font-size:11px;padding:5px 10px;white-space:nowrap;">열기 →</button>
+        <div style="display:flex;gap:6px;white-space:nowrap;">
+          <button class="btn outline" data-lib-open="${it.type}:${it.id}" style="font-size:11px;padding:5px 10px;">열기 →</button>
+          <button class="btn outline" data-lib-delete="${it.type}:${it.id}" style="font-size:11px;padding:5px 10px;border-color:var(--seal);color:var(--seal);">삭제</button>
+        </div>
       </div>
     </div>
   `;
@@ -3220,6 +3254,13 @@ function bindLibraryResultButtons(){
       const [type, id] = btn.dataset.libOpen.split(":");
       if(type === "column"){ state.route = "columns"; loadColumnProject(id); }
       else { state.route = "cardnews"; loadCardNewsProject(id); }
+    });
+  });
+  document.querySelectorAll("[data-lib-delete]").forEach(btn=>{
+    btn.addEventListener("click", ()=>{
+      const [type, id] = btn.dataset.libDelete.split(":");
+      if(type === "column") deleteColumnProject(id);
+      else deleteCardNewsProject(id);
     });
   });
 }
@@ -3247,6 +3288,7 @@ function renderLibrary(){
           <button class="btn ${state.libraryTypeFilter==='column'?'amber':'outline'}" data-lib-type-filter="column" style="font-size:12px;padding:6px 12px;">칼럼</button>
           <button class="btn ${state.libraryTypeFilter==='cardnews'?'amber':'outline'}" data-lib-type-filter="cardnews" style="font-size:12px;padding:6px 12px;">카드뉴스</button>
         </div>
+        <button class="btn outline" id="lib-export-csv-btn" style="font-size:12px;padding:6px 12px;white-space:nowrap;">⬇️ CSV 내보내기</button>
       </div>
       ${tagChips ? `<div class="month-tabs" style="margin-bottom:0;">${tagChips}${state.libraryTagFilter ? `<span class="month-tab" data-lib-tag-filter="">✕ 태그 필터 해제</span>` : ""}</div>` : ""}
     </div>
@@ -4301,6 +4343,8 @@ function bindRouteEvents(){
         render();
       });
     });
+    const libExportCsvBtn = document.getElementById("lib-export-csv-btn");
+    if(libExportCsvBtn) libExportCsvBtn.addEventListener("click", downloadLibraryCsv);
     bindLibraryResultButtons();
   }
   if(state.route === "keywords"){
