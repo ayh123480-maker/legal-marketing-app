@@ -251,10 +251,10 @@ const state = {
   currentAnalysisError: null,
 
   // 법률 칼럼 재구성 파이프라인 (칼럼 → 릴스대본)
-  columnProjects: [],   // 저장된 프로젝트: [{id, category, title, rewrittenColumn, reelsScript, createdAt}]
+  columnProjects: [],   // 저장된 프로젝트: [{id, title, rewrittenColumn, reelsScript, createdAt}]
   brandSettings: { orgName:"", phone:"", tagline:"", kicker:"" },  // 카드뉴스에 들어갈 사무소 정보 (kicker: 카드 상단에 뜨는 시리즈 라벨)
   styleGuide: "",        // 글쓰기 스타일 가이드 (칼럼/카드뉴스/릴스 전체에 자동 적용)
-  cardColorPresets: {},  // { "personal-rehab": {coverBg,coverText,accent,contentBg,contentText}, "criminal": {...} }
+  cardColorPresets: {},  // {coverBg,coverText,contentBg,contentText,ctaBg,ctaText,accent} — 카드뉴스 전체에 적용되는 단일 색상 팔레트 (카테고리 구분 없음)
   styleTemplates: [],    // [{id, name, styleGuide, createdAt}] — 글쓰기 스타일 전용 템플릿
   cardNewsPrompt: "",    // 카드뉴스 전용 스타일/톤/구성 프롬프트 (카드뉴스 대본 생성시에만 반영)
   cardNewsTemplates: [], // [{id, name, cardNewsPrompt, cardColorPresets, brandSettings, slideCount, createdAt}] — 카드뉴스 전용 템플릿
@@ -265,7 +265,6 @@ const state = {
   cardSettingsOpen: false,     // 카드뉴스 페이지 내 카드뉴스 설정 패널 펼침 여부 (저장 안 함, 세션 한정)
   cardBulkEditOpen: false,     // 완성된 카드뉴스 화면의 "킥커·발행주체 일괄 수정" 패널 펼침 여부 (세션 한정)
   pipeline: {
-    category: "personal-rehab",   // personal-rehab | criminal
     inputMode: "text",            // text | url
     sourceUrl: "",
     sourceText: "",
@@ -278,9 +277,8 @@ const state = {
   },
 
   // 카드뉴스 만들기 (칼럼 재구성과 완전히 별개의 독립 파이프라인)
-  cardNewsProjects: [],  // 저장된 카드뉴스: [{id, category, baseContent, cardOutline, cardNews, createdAt}]
+  cardNewsProjects: [],  // 저장된 카드뉴스: [{id, baseContent, cardOutline, cardNews, createdAt}]
   cardPipeline: {
-    category: "personal-rehab",   // personal-rehab | criminal
     inputMode: "text",            // text | url | youtube
     sourceUrl: "",
     sourceText: "",
@@ -297,8 +295,6 @@ const state = {
 
   loaded:false,
 };
-
-const CATEGORY_LABEL = { "personal-rehab":"개인회생", "criminal":"형사사건" };
 
 async function loadState(){
   try{
@@ -435,8 +431,7 @@ function collectCardNewsSettingsFromForm(){
   const cardNewsPrompt = promptEl ? promptEl.value : (state.cardNewsPrompt||"");
   const cardColorPresets = { ...state.cardColorPresets };
   document.querySelectorAll("[data-card-color]").forEach(input=>{
-    const [category, key] = input.dataset.cardColor.split(":");
-    cardColorPresets[category] = { ...(cardColorPresets[category]||{}), [key]: input.value };
+    cardColorPresets[input.dataset.cardColor] = input.value;
   });
   const orgNameEl = document.getElementById("brand-org-name");
   const phoneEl = document.getElementById("brand-phone");
@@ -1013,12 +1008,6 @@ function renderColumns(){
     <div class="section-note">원문을 그대로 베끼지 않고, 핵심 주제·논지만 추출해서 완전히 새로운 문장으로 재작성합니다.</div>
     <div class="card" style="padding:16px;">
       <div class="form-grid">
-        <label>카테고리
-          <select class="field" id="col-category">
-            <option value="personal-rehab" ${p.category==="personal-rehab"?"selected":""}>개인회생</option>
-            <option value="criminal" ${p.category==="criminal"?"selected":""}>형사사건 상담</option>
-          </select>
-        </label>
         <label>입력 방식
           <select class="field" id="col-input-mode">
             <option value="text" ${p.inputMode==="text"?"selected":""}>텍스트 붙여넣기</option>
@@ -1078,12 +1067,6 @@ function renderCardNews(){
     <div class="section-note">칼럼을 먼저 재작성할 필요 없이, 원하는 내용을 바로 입력하면 카드뉴스 대본 초안이 나와요.</div>
     <div class="card" style="padding:16px;">
       <div class="form-grid">
-        <label>카테고리
-          <select class="field" id="card-category">
-            <option value="personal-rehab" ${p.category==="personal-rehab"?"selected":""}>개인회생</option>
-            <option value="criminal" ${p.category==="criminal"?"selected":""}>형사사건 상담</option>
-          </select>
-        </label>
         <label>입력 방식
           <select class="field" id="card-input-mode">
             <option value="text" ${p.inputMode==="text"?"selected":""}>텍스트 붙여넣기</option>
@@ -1190,9 +1173,9 @@ function renderCardNewsSettingsPanel(){
 
   return `
     <div style="padding-top:14px;">
-      <div style="font-weight:700;font-size:13px;margin-bottom:6px;">카드뉴스 색상 · 분위기 (${CATEGORY_LABEL[p.category]||p.category})</div>
-      <div class="section-note" style="margin-top:0;">지금 선택된 카테고리에 적용되는 색상이에요. 카테고리를 바꾸면 그 카테고리의 색상이 나와요.</div>
-      <div style="margin-bottom:16px;">${renderCardColorFields(p.category)}</div>
+      <div style="font-weight:700;font-size:13px;margin-bottom:6px;">카드뉴스 색상 · 분위기</div>
+      <div class="section-note" style="margin-top:0;">만드는 모든 카드뉴스에 공통으로 적용되는 색상이에요.</div>
+      <div style="margin-bottom:16px;">${renderCardColorFields()}</div>
 
       <div style="font-weight:700;font-size:13px;margin-bottom:6px;">카드뉴스 브랜드 정보</div>
       <div class="form-grid" style="margin-bottom:14px;">
@@ -1242,7 +1225,6 @@ function renderRewrittenColumn(p){
   return `
     <div class="section-title">2단계 · 재작성된 칼럼</div>
     <div class="card" style="padding:16px;border-left:4px solid var(--amber);">
-      <div class="kw">${CATEGORY_LABEL[p.category]}</div>
       <div class="serif" style="font-weight:700;font-size:16px;margin-bottom:8px;">${c.title}</div>
       <div style="font-size:13px;line-height:1.7;white-space:pre-wrap;">${c.body}</div>
       <div style="margin-top:12px;">
@@ -1292,7 +1274,7 @@ function renderCardNewsBlock(p){
     return `
     <div class="card" style="padding:14px;margin-bottom:12px;display:flex;gap:16px;align-items:center;flex-wrap:wrap;">
       <div data-open-card-editor="${idx}" style="width:216px;height:270px;border-radius:10px;overflow:hidden;box-shadow:0 1px 4px rgba(0,0,0,0.12);flex-shrink:0;position:relative;cursor:pointer;" title="눌러서 확대 편집">
-        ${buildCardMarkup(s, idx, slides.length, p.category, brand, 216, 270)}
+        ${buildCardMarkup(s, idx, slides.length, brand, 216, 270)}
         <div style="position:absolute;left:0;right:0;bottom:0;background:rgba(28,43,69,0.72);color:#fff;font-size:11px;text-align:center;padding:6px 0;">🔍 눌러서 확대 편집</div>
       </div>
       <div style="flex:1;min-width:200px;font-size:12px;opacity:0.65;">${idx+1}번 슬라이드 · 카드를 누르면 확대해서 텍스트·이미지·배경·색상을 편집할 수 있어요${visualHint}</div>
@@ -1369,7 +1351,7 @@ function renderCardEditorModal(){
       `;
     }
     const fontOptionsHTML = FONT_OPTIONS.map(f=>`<option value="${f.value}" ${((layer.fontFamily||"")===f.value)?"selected":""}>${f.label}</option>`).join("");
-    const colorValue = layer.color || textColorForLayerDefault(idx, cn.slides.length, p.category, slide);
+    const colorValue = layer.color || textColorForLayerDefault(idx, cn.slides.length, slide);
     return `
       <div style="${rowBorder}border-radius:8px;padding:8px;margin-bottom:8px;">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
@@ -1395,7 +1377,7 @@ function renderCardEditorModal(){
     `;
   }).join("");
 
-  const theme = resolveSlideTheme(idx, cn.slides.length, p.category);
+  const theme = resolveSlideTheme(idx, cn.slides.length);
   const co = slide.colorOverride || {};
   const bgColorValue = co.bg || theme.bg;
   const textColorValue = co.text || theme.text;
@@ -1434,7 +1416,7 @@ function renderCardEditorModal(){
           <div style="font-size:11px;opacity:0.6;margin-bottom:8px;max-width:${W}px;">${idx+1}번 슬라이드 · 텍스트/이미지를 마우스로 끌어 옮기고, 모서리 손잡이로 크기를 자유롭게 바꿔보세요. 텍스트는 더블클릭하면 그 자리에서 바로 쓰거나 지울 수 있어요.</div>
           <div style="font-size:10px;opacity:0.5;margin-bottom:8px;max-width:${W}px;">💡 더블클릭으로 편집 → 다 쓰면 바깥을 눌러 완료 → 다시 한 번 클릭하면 폰트·색·정렬·크기 툴바가 떠요.</div>
           <div style="width:${W}px;height:${H}px;border-radius:12px;overflow:hidden;box-shadow:0 4px 18px rgba(0,0,0,0.2);">
-            ${buildCardMarkup(slide, idx, cn.slides.length, p.category, brand, W, H, {interactive:true, selectedLayerId, editingLayerId: ed.editingLayer||null})}
+            ${buildCardMarkup(slide, idx, cn.slides.length, brand, W, H, {interactive:true, selectedLayerId, editingLayerId: ed.editingLayer||null})}
           </div>
         </div>
         <div id="card-editor-panel" style="flex:1;min-width:260px;max-height:${H+40}px;overflow:auto;padding-right:4px;">
@@ -1634,8 +1616,8 @@ async function addChartLayerFromBuilder(){
   }
 }
 
-function textColorForLayerDefault(idx, total, category, slide){
-  const theme = resolveSlideTheme(idx, total, category);
+function textColorForLayerDefault(idx, total, slide){
+  const theme = resolveSlideTheme(idx, total);
   return (slide.colorOverride && slide.colorOverride.text) || theme.text;
 }
 
@@ -1653,8 +1635,8 @@ function escapeHtml(s){
   return String(s==null?"":s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
 }
 
-function defaultCardColors(category){
-  // "LEGAL EDITORIAL DESIGN SYSTEM" 문서에 정의된 고정 팔레트
+function defaultCardColors(){
+  // "LEGAL EDITORIAL DESIGN SYSTEM" 문서에 정의된 고정 팔레트 (DESIGN.md 참고)
   const accent = "#06C8E3"; // Primary Accent Cyan
   return {
     coverBg: "#121C28", coverText: "#ffffff",      // Dark Navy
@@ -1664,9 +1646,9 @@ function defaultCardColors(category){
   };
 }
 
-function cardTheme(category){
-  const defaults = defaultCardColors(category);
-  const custom = (state.cardColorPresets && state.cardColorPresets[category]) || {};
+function cardTheme(){
+  const defaults = defaultCardColors();
+  const custom = state.cardColorPresets || {};
   return { ...defaults, ...custom };
 }
 
@@ -1769,9 +1751,10 @@ function computeInitialSlideLayout(headline, subtext, isCover, isCta){
 
   const subtextFontSize = baseFontSizeForType("subtext", W, isCover, isCta);
   const subtextLines = String(subtext||"").split("\n").map(l=>l.trim()).filter(Boolean);
-  const isBoxStyle = subtextLines.length >= 2;
+  const isMultiLine = subtextLines.length >= 2;
   const subtextLineHeight = 1.5;
-  const subtextPadding = isBoxStyle ? H*0.036 : 0; // 박스형이면 위아래 패딩만큼 여유를 더 준다
+  // 항목이 여러 줄이면 줄마다 구분선용 여백(padding)이 살짝 붙으므로 그만큼만 여유를 더 준다 (예전엔 색 박스 전체 패딩이라 더 컸음)
+  const subtextPadding = isMultiLine ? H*0.012*subtextLines.length : 0;
   const subtextH = Math.max(subtextFontSize*subtextLineHeight, estimateTextHeightPx(subtext, subtextFontSize, subtextLineHeight, boxWidth) + subtextPadding);
 
   const gap = H * 0.035;
@@ -1802,8 +1785,8 @@ const FONT_OPTIONS = [
 ];
 
 /* 슬라이드 위치(표지/본문/CTA)에 따른 기본 배경·글자·강조색 (colorOverride 적용 전 값) */
-function resolveSlideTheme(idx, total, category){
-  const t = cardTheme(category);
+function resolveSlideTheme(idx, total){
+  const t = cardTheme();
   const isCover = idx === 0;
   const isCta = idx === total - 1;
   if(isCover) return { bg:t.coverBg, text:t.coverText, accent:t.accent };
@@ -1832,7 +1815,7 @@ function normalizeCardNews(cardNews){
   return cardNews;
 }
 
-function buildCardMarkup(slide, idx, total, category, brand, w, h, opts){
+function buildCardMarkup(slide, idx, total, brand, w, h, opts){
   opts = opts || {};
   const interactive = !!opts.interactive;
   ensureSlideLayers(slide, idx, total);
@@ -1844,12 +1827,12 @@ function buildCardMarkup(slide, idx, total, category, brand, w, h, opts){
   const baseCustomSize = w * 0.036;
   const baseImageSize = w * 0.55;
   const footerSize = Math.round(w * 0.026);
-  const kickerText = (brand && brand.kicker) ? brand.kicker : ((CATEGORY_LABEL[category] || category) + " 가이드");
+  const kickerText = (brand && brand.kicker) ? brand.kicker : "가이드";
   const org = brand && brand.orgName ? brand.orgName : "법률사무소 OOO";
   const phone = brand && brand.phone ? brand.phone : "02-0000-0000";
   const tagline = brand && brand.tagline ? brand.tagline : "지금 상담 신청하세요";
 
-  const theme = resolveSlideTheme(idx, total, category);
+  const theme = resolveSlideTheme(idx, total);
   let bg = theme.bg, textColor = theme.text, accentColor = theme.accent;
   const co = slide.colorOverride;
   if(co){
@@ -1895,8 +1878,8 @@ function buildCardMarkup(slide, idx, total, category, brand, w, h, opts){
     if(subtextLayer){
       const subtextFontSize = baseFontSizeForType("subtext", w, isCover, isCta) * (subtextLayer.scale||1);
       const subtextLines = String(subtextLayer.text||"").split("\n").map(l=>l.trim()).filter(Boolean);
-      const isBoxStyle = subtextLines.length >= 2;
-      const subtextPadding = isBoxStyle ? h*0.036 : 0;
+      const isMultiLine = subtextLines.length >= 2;
+      const subtextPadding = isMultiLine ? h*0.012*subtextLines.length : 0;
       const subtextHpx = Math.max(subtextFontSize*1.5, estimateTextHeightPx(subtextLayer.text, subtextFontSize, 1.5, w*0.84) + subtextPadding);
       anchorFrac = ((subtextLayer.y/100)*h + subtextHpx/2) / h;
     }
@@ -1976,16 +1959,18 @@ function buildCardMarkup(slide, idx, total, category, brand, w, h, opts){
     if(layer.type === "subtext"){
       const rawLines = layer.text.split("\n").map(l=>l.trim()).filter(Boolean);
       if(rawLines.length >= 2){
-        const boxBg = isDarkColor(bg) ? "rgba(255,255,255,0.07)" : "#F3F6F9";
+        // 예전엔 색이 채워진 박스로 감쌌는데, 슬라이드마다 똑같이 박스 처리되니 단조로워 보였다.
+        // 지금은 배경 없이 항목 사이에 얇은 구분선만 넣는 가벼운 스타일로 바꿨다.
+        const dividerColor = isDarkColor(bg) ? "rgba(255,255,255,0.14)" : "rgba(18,28,40,0.1)";
         const dotSize = Math.max(5, Math.round(w*0.013));
-        const rowsHTML = rawLines.map(line => `
-          <div style="display:flex;align-items:flex-start;gap:${Math.round(w*0.02)}px;padding:${Math.round(h*0.007)}px 0;">
+        const rowsHTML = rawLines.map((line, li) => `
+          <div style="display:flex;align-items:flex-start;gap:${Math.round(w*0.02)}px;padding:${Math.round(h*0.012)}px 0;${li < rawLines.length-1 ? `border-bottom:1px solid ${dividerColor};` : ""}">
             <div style="width:${dotSize}px;height:${dotSize}px;min-width:${dotSize}px;border-radius:50%;background:${accentColor};margin-top:${Math.round(fontSize*0.45)}px;"></div>
             <div style="flex:1;word-break:keep-all;">${escapeHtml(line)}</div>
           </div>
         `).join("");
         return `
-          <div ${layerAttr(idx, layer.id)} data-role="${layer.type}" style="position:absolute;left:${layer.x}%;top:${layer.y}%;transform:translate(-50%,-50%);width:${boxWidth}px;text-align:${textAlign==='center'?'left':textAlign};font-family:${fontFamily};font-weight:${fontWeight};font-style:${fontStyle};text-decoration:${textDecoration};font-size:${fontSize}px;line-height:${lineHeight};color:${textFillColor};opacity:${opacity};background:${boxBg};border-radius:${Math.round(w*0.028)}px;padding:${Math.round(h*0.022)}px ${Math.round(w*0.04)}px;box-sizing:border-box;user-select:none;word-break:keep-all;${dragAttrs}${selectOutline}">${rowsHTML}</div>
+          <div ${layerAttr(idx, layer.id)} data-role="${layer.type}" style="position:absolute;left:${layer.x}%;top:${layer.y}%;transform:translate(-50%,-50%);width:${boxWidth}px;text-align:${textAlign==='center'?'left':textAlign};font-family:${fontFamily};font-weight:${fontWeight};font-style:${fontStyle};text-decoration:${textDecoration};font-size:${fontSize}px;line-height:${lineHeight};color:${textFillColor};opacity:${opacity};box-sizing:border-box;user-select:none;word-break:keep-all;${dragAttrs}${selectOutline}">${rowsHTML}</div>
         `;
       }
     }
@@ -2165,21 +2150,21 @@ async function ensureFontsReady(){
   try{ if(document.fonts && document.fonts.ready) await document.fonts.ready; }catch(e){}
 }
 
-function createOffscreenCardNode(slide, idx, total, category, brand){
+function createOffscreenCardNode(slide, idx, total, brand){
   const w = 1080, h = 1350;
   const holder = document.createElement("div");
   holder.style.position = "fixed";
   holder.style.left = "-99999px";
   holder.style.top = "0";
   holder.style.zIndex = "-1";
-  holder.innerHTML = buildCardMarkup(slide, idx, total, category, brand, w, h);
+  holder.innerHTML = buildCardMarkup(slide, idx, total, brand, w, h);
   document.body.appendChild(holder);
   return holder;
 }
 
-async function captureCardToCanvas(slide, idx, total, category, brand){
+async function captureCardToCanvas(slide, idx, total, brand){
   await ensureFontsReady();
-  const node = createOffscreenCardNode(slide, idx, total, category, brand);
+  const node = createOffscreenCardNode(slide, idx, total, brand);
   try{
     applyDynamicFlow(node.firstElementChild, slide);
     const canvas = await html2canvas(node.firstElementChild, { backgroundColor:null, scale:1, useCORS:true });
@@ -2197,7 +2182,7 @@ async function downloadSingleCard(idx){
   const originalLabel = btn ? btn.textContent : "";
   if(btn){ btn.disabled = true; btn.textContent = "생성 중..."; }
   try{
-    const canvas = await captureCardToCanvas(cn.slides[idx], idx, cn.slides.length, p.category, state.brandSettings);
+    const canvas = await captureCardToCanvas(cn.slides[idx], idx, cn.slides.length, state.brandSettings);
     const url = canvas.toDataURL("image/png");
     const a = document.createElement("a");
     a.href = url; a.download = "cardnews-"+String(idx+1).padStart(2,"0")+".png"; a.click();
@@ -2217,7 +2202,7 @@ async function downloadAllCardsZip(){
     const zip = new JSZip();
     for(let i=0;i<cn.slides.length;i++){
       if(btn) btn.textContent = "생성 중... ("+(i+1)+"/"+cn.slides.length+")";
-      const canvas = await captureCardToCanvas(cn.slides[i], i, cn.slides.length, p.category, state.brandSettings);
+      const canvas = await captureCardToCanvas(cn.slides[i], i, cn.slides.length, state.brandSettings);
       const dataUrl = canvas.toDataURL("image/png");
       const base64 = dataUrl.split(",")[1];
       zip.file("cardnews-"+String(i+1).padStart(2,"0")+".png", base64, {base64:true});
@@ -2261,7 +2246,7 @@ function renderSavedColumnProject(item){
     <div class="idea-card" style="${isEditing ? "border-color:var(--amber);" : ""}">
       <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;">
         <div>
-          <div class="kw">${CATEGORY_LABEL[item.category]||item.category} · ${item.updatedAt ? "수정":"작성"} ${dateLabel}${isEditing ? " · <b style=\"color:var(--amber);\">편집 중</b>" : ""}</div>
+          <div class="kw">${item.updatedAt ? "수정":"작성"} ${dateLabel}${isEditing ? " · <b style=\"color:var(--amber);\">편집 중</b>" : ""}</div>
           <div style="font-weight:600;">${(item.rewrittenColumn && item.rewrittenColumn.title) || "(제목 없음)"}</div>
         </div>
         <div style="display:flex;gap:6px;white-space:nowrap;">
@@ -2282,7 +2267,7 @@ function renderSavedCardNewsProject(item){
     <div class="idea-card" style="${isEditing ? "border-color:var(--amber);" : ""}">
       <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;">
         <div>
-          <div class="kw">${CATEGORY_LABEL[item.category]||item.category} · ${slideCount}장 · ${item.updatedAt ? "수정":"작성"} ${dateLabel}${isEditing ? " · <b style=\"color:var(--amber);\">편집 중</b>" : ""}</div>
+          <div class="kw">${slideCount}장 · ${item.updatedAt ? "수정":"작성"} ${dateLabel}${isEditing ? " · <b style=\"color:var(--amber);\">편집 중</b>" : ""}</div>
           <div style="font-weight:600;">${escapeHtml(title)}</div>
         </div>
         <div style="display:flex;gap:6px;white-space:nowrap;">
@@ -2306,21 +2291,12 @@ function densityInstruction(density){
   return `핵심 정보 위주로 적당히 상세하게. 슬라이드당 메인 포인트 1개 + 보조 설명 1~2문장 정도가 기본이고, 필요하면 짧은 포인트 2~3개를 줄바꿈으로 나눠 적어도 좋아. 너무 함축하거나 너무 장황하지 않게 균형을 맞춰.`;
 }
 
-function categoryPersonaPrompt(category){
-  let base;
-  if(category==="criminal"){
-    base = `카테고리: 형사사건 상담 마케팅
-- 타겟: 형사 사건(고소·고발·수사·재판)에 연루되어 불안해하는 일반인
-- 톤: 차분하고 신뢰감 있게, "초기 대응의 중요성"을 강조해 상담을 유도
-- 절대 금지: 승소·무혐의·형량 감경을 보장하거나 암시하는 표현, 자극적인 공포 조장, 과장된 실적 홍보
-- 대한변호사협회 변호사 광고에 관한 규정을 준수하는 절제된 표현만 사용`;
-  } else {
-    base = `카테고리: 개인회생 마케팅
-- 타겟: 채무 문제로 개인회생·개인파산을 고민 중인 일반인
-- 톤: 공감하고 희망적으로, "새출발이 가능하다"는 메시지를 담되 과장하지 않음
-- 절대 금지: 무조건적인 탕감/면책을 보장하는 표현, 정부 지원사업처럼 오인시키는 표현
-- 대한변호사협회 변호사 광고에 관한 규정을 준수하는 절제된 표현만 사용`;
-  }
+function writingPersonaPrompt(){
+  let base = `너는 금융·법률 관련 콘텐츠를 매력적이면서도 신뢰감 있게 쓰는 마케팅 카피라이터야. 아래는 어떤 주제를 다루든 항상 지켜야 하는 원칙이야.
+- 절대 금지: 결과·수익·성공·면책을 보장하거나 확정적으로 말하는 표현, 근거 없는 수치·주장, 공포심을 과도하게 자극하는 문구, "무조건", "100%", "이것만 알면" 같은 자극적 광고 문구
+- 톤: 차분하고 신뢰감 있게, 잘 정리된 정보 콘텐츠처럼 읽히게 — 광고처럼 들리지 않게
+- 대한변호사협회 변호사 광고에 관한 규정, 표시광고법 등 관련 광고 규정을 준수하는 절제된 표현만 사용
+- 원본 내용에 없는 사실이나 수치를 지어내지 말고, 주어진 소재를 충실히 반영할 것`;
   if(state.styleGuide && state.styleGuide.trim()){
     base += `\n\n[우리 사무소 글쓰기 스타일 가이드 - 반드시 따를 것]\n${state.styleGuide.trim()}`;
   }
@@ -2361,7 +2337,7 @@ function extractBetween(text, startMarker, endMarker){
 
 async function generateRewrittenColumn(){
   const p = state.pipeline;
-  const persona = categoryPersonaPrompt(p.category);
+  const persona = writingPersonaPrompt();
   let sourceText = p.sourceText;
 
   if(p.inputMode === "url"){
@@ -2416,7 +2392,7 @@ ${sourceInstruction}
 /* 실제 카드뉴스를 만들기 전, 슬라이드별로 어떤 내용을 다룰지 먼저 간단히 구성안(대본 초안)만 짜준다.
    p: state.cardPipeline, c: {title, body} 형태로 정리된 원고(baseContent) */
 async function generateCardOutline(p, c){
-  const persona = categoryPersonaPrompt(p.category);
+  const persona = writingPersonaPrompt();
   const count = Math.max(1, Math.min(20, Number(p.slideCount) || 8));
   const density = p.cardDensity || "medium";
   const densityNote = densityInstruction(density);
@@ -2463,7 +2439,7 @@ ${c.body}
 
 /* p: state.cardPipeline, c: {title, body} 형태로 정리된 원고(baseContent) */
 async function generateCardNewsScript(p, c){
-  const persona = categoryPersonaPrompt(p.category);
+  const persona = writingPersonaPrompt();
   const outline = (p.cardOutline||[]).length ? p.cardOutline : null;
   const count = outline ? outline.length : Math.max(1, Math.min(20, Number(p.slideCount) || 8));
   const density = p.cardDensity || "medium";
@@ -2494,7 +2470,7 @@ ${outlineBlock}
 5. 슬라이드마다 문장 구조·시작 단어를 다르게 해서 반복되는 패턴("~하는 경우", "~할 수 있습니다"만 계속 반복 등)을 피해.
 6. 마지막 장은 부담스러운 강매 톤이 아니라, 지금까지 읽은 사람이 자연스럽게 상담을 신청하고 싶어지는 톤으로. 매 프로젝트마다 CTA 문구를 살짝 다르게 써서 뻔한 상투어를 피해.
 7. 승소·결과·감면액을 보장하거나 확정적으로 말하는 표현은 절대 쓰지 마. "당장 신청하세요!", "모르면 손해!", "무조건 가능합니다!", "100% 해결됩니다!", "이걸 모르면 손해!" 같은 자극적 광고 문구도 쓰지 마. 이 카드뉴스는 "광고"가 아니라 "잘 정리된 법률 전문 리포트/매거진"처럼 읽혀야 해 — 차분하고 단정한 어조를 유지해.
-8. 보조설명에서 서로 구분되는 포인트가 여러 개면, 문장을 이어붙이지 말고 줄바꿈으로 나눠서 각각 짧은 항목으로 적어(카드에서 항목별로 박스에 나눠 보여줘). 포인트가 하나뿐이면 그냥 한 문단으로 적어도 돼.
+8. 보조설명에서 서로 구분되는 포인트가 여러 개면, 문장을 이어붙이지 말고 줄바꿈으로 나눠서 각각 짧은 항목으로 적어(카드에서 항목별로 구분선을 넣어 보여줘). 포인트가 하나뿐이면 그냥 한 문단으로 적어도 돼. 모든 슬라이드를 항목 나열식으로 통일하지 말고, 내용에 따라 한 문단으로 자연스럽게 풀어 쓰는 슬라이드도 섞어서 단조롭지 않게 해.
 9. 슬라이드 안에 눈에 띄게 강조하고 싶은 핵심 수치나 한 줄 요약이 있으면(모든 슬라이드에 넣을 필요 없음, 있을 때만), 보조설명 다음 줄에 "HIGHLIGHT: 강조할 내용"을 별도로 추가해. 마지막 CTA 슬라이드는 가능하면 꼭 HIGHLIGHT 한 줄(상담 유도 문구)을 넣어. CTA 문구도 "구체적인 신청 가능 여부는 상담을 통해 확인할 수 있습니다"처럼 담백하게, 결과를 보장하는 톤은 피해.
 
 출력은 아래 형식을 정확히 그대로 따라서 작성해. JSON이나 마크다운, 다른 설명 없이 이 형식만 출력해. 각 슬라이드는 "###SLIDE###" 한 줄로 시작하고, 그 다음 줄에 헤드라인 한 줄, 그 다음 줄부터 보조설명(그리고 필요하면 HIGHLIGHT 줄)을 적어. 모든 슬라이드가 끝나면 마지막에 "###END###"를 적어.
@@ -2571,7 +2547,7 @@ HIGHLIGHT: 강조할 한 줄 (있을 때만)
 async function generateReelsScriptFn(){
   const p = state.pipeline;
   const c = p.rewrittenColumn;
-  const persona = categoryPersonaPrompt(p.category);
+  const persona = writingPersonaPrompt();
   const prompt = `너는 숏폼(릴스/쇼츠) 대본 작가야. ${persona}
 
 아래 칼럼을 30~45초 분량의 릴스 대본으로 각색해. 처음 3초 안에 시선을 끄는 훅으로 시작하고, 장면은 3~6개로 나누고, 마지막은 상담 유도 CTA로 마무리해.
@@ -2663,7 +2639,7 @@ async function resolveCardSourceText(p){
 /* 카드뉴스 대본 초안을 만들기 전, 입력된 원문을 카드뉴스에 쓰기 좋은 제목·본문으로 내부적으로 정리한다.
    (칼럼 재작성과 달리 별도 화면 단계로 보여주지 않고, "카드뉴스 대본 만들기" 한 번에 이어서 처리한다) */
 async function generateCardBaseContent(p){
-  const persona = categoryPersonaPrompt(p.category);
+  const persona = writingPersonaPrompt();
   const sourceText = await resolveCardSourceText(p);
 
   const sourceInstruction = `아래는 참고용 원본 ${p.inputMode==="youtube" ? "영상 자막" : "텍스트"}야.
@@ -2757,21 +2733,20 @@ async function saveColumnProject(){
     // 이미 저장된 프로젝트를 불러와 편집 중이면, 새로 만들지 않고 그 프로젝트를 최신 내용으로 갱신한다
     const item = state.columnProjects.find(x=>x.id===p.projectId);
     if(item){
-      item.category = p.category;
       item.rewrittenColumn = p.rewrittenColumn;
       item.reelsScript = p.reelsScript;
       item.updatedAt = now;
     } else {
       // 원본이 삭제된 경우 새 항목으로 저장
       state.columnProjects.push({
-        id: p.projectId, category: p.category, rewrittenColumn: p.rewrittenColumn,
+        id: p.projectId, rewrittenColumn: p.rewrittenColumn,
         reelsScript: p.reelsScript, createdAt: now, updatedAt: now,
       });
     }
   } else {
     p.projectId = "colp-"+Date.now()+"-"+Math.random().toString(36).slice(2,7);
     state.columnProjects.push({
-      id: p.projectId, category: p.category, rewrittenColumn: p.rewrittenColumn,
+      id: p.projectId, rewrittenColumn: p.rewrittenColumn,
       reelsScript: p.reelsScript, createdAt: now, updatedAt: now,
     });
   }
@@ -2783,7 +2758,6 @@ async function saveColumnProject(){
 
 function resetPipeline(){
   state.pipeline = {
-    category: state.pipeline.category,
     inputMode: state.pipeline.inputMode,
     sourceUrl: "", sourceText: "",
     projectId: null, savedJustNow: false,
@@ -2798,7 +2772,6 @@ function loadColumnProject(id){
   const item = state.columnProjects.find(x=>x.id===id);
   if(!item) return;
   state.pipeline = {
-    category: item.category,
     inputMode: "text",
     sourceUrl: "", sourceText: "",
     projectId: item.id, savedJustNow: false,
@@ -2825,21 +2798,20 @@ async function saveCardNewsProject(){
   if(p.projectId){
     const item = state.cardNewsProjects.find(x=>x.id===p.projectId);
     if(item){
-      item.category = p.category;
       item.baseContent = p.baseContent;
       item.cardOutline = p.cardOutline;
       item.cardNews = p.cardNews;
       item.updatedAt = now;
     } else {
       state.cardNewsProjects.push({
-        id: p.projectId, category: p.category, baseContent: p.baseContent,
+        id: p.projectId, baseContent: p.baseContent,
         cardOutline: p.cardOutline, cardNews: p.cardNews, createdAt: now, updatedAt: now,
       });
     }
   } else {
     p.projectId = "cnp-"+Date.now()+"-"+Math.random().toString(36).slice(2,7);
     state.cardNewsProjects.push({
-      id: p.projectId, category: p.category, baseContent: p.baseContent,
+      id: p.projectId, baseContent: p.baseContent,
       cardOutline: p.cardOutline, cardNews: p.cardNews, createdAt: now, updatedAt: now,
     });
   }
@@ -2851,7 +2823,6 @@ async function saveCardNewsProject(){
 
 function resetCardPipeline(){
   state.cardPipeline = {
-    category: state.cardPipeline.category,
     inputMode: state.cardPipeline.inputMode,
     sourceUrl: "", sourceText: "",
     slideCount: state.cardPipeline.slideCount || 8,
@@ -2868,7 +2839,6 @@ function loadCardNewsProject(id){
   const item = state.cardNewsProjects.find(x=>x.id===id);
   if(!item) return;
   state.cardPipeline = {
-    category: item.category,
     inputMode: "text",
     sourceUrl: "", sourceText: "",
     slideCount: (item.cardNews && item.cardNews.slides && item.cardNews.slides.length) || 8,
@@ -3041,15 +3011,13 @@ function cardColorFieldLabel(key){
   }[key] || key;
 }
 
-function renderCardColorFields(category){
-  const preset = { ...defaultCardColors(category), ...((state.cardColorPresets && state.cardColorPresets[category]) || {}) };
-  const label = CATEGORY_LABEL[category];
+function renderCardColorFields(){
+  const preset = { ...defaultCardColors(), ...(state.cardColorPresets||{}) };
   return `
     <div style="flex:1;min-width:240px;">
-      <div style="font-weight:700;margin-bottom:10px;">${label}</div>
       ${["coverBg","coverText","contentBg","contentText","ctaBg","ctaText","accent"].map(key=>`
         <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;">
-          <input type="color" data-card-color="${category}:${key}" value="${preset[key]}" style="width:36px;height:28px;border:none;padding:0;background:none;cursor:pointer;" />
+          <input type="color" data-card-color="${key}" value="${preset[key]}" style="width:36px;height:28px;border:none;padding:0;background:none;cursor:pointer;" />
           <span style="font-size:12px;opacity:0.75;">${cardColorFieldLabel(key)}</span>
         </div>
       `).join("")}
@@ -3231,8 +3199,6 @@ function bindRouteEvents(){
     document.querySelectorAll("[data-delete-writing-template]").forEach(btn=>{
       btn.addEventListener("click", ()=> deleteWritingTemplate(btn.dataset.deleteWritingTemplate));
     });
-    const catSel = document.getElementById("col-category");
-    if(catSel) catSel.addEventListener("change", ()=>{ state.pipeline.category = catSel.value; render(); });
     const modeSel = document.getElementById("col-input-mode");
     if(modeSel) modeSel.addEventListener("change", ()=>{ state.pipeline.inputMode = modeSel.value; render(); });
     const urlInput = document.getElementById("col-source-url");
@@ -3328,8 +3294,6 @@ function bindRouteEvents(){
     document.querySelectorAll("[data-delete-cardnews-template]").forEach(btn=>{
       btn.addEventListener("click", ()=> deleteCardNewsTemplate(btn.dataset.deleteCardnewsTemplate));
     });
-    const catSel = document.getElementById("card-category");
-    if(catSel) catSel.addEventListener("change", ()=>{ state.cardPipeline.category = catSel.value; render(); });
     const modeSel = document.getElementById("card-input-mode");
     if(modeSel) modeSel.addEventListener("change", ()=>{ state.cardPipeline.inputMode = modeSel.value; render(); });
     const slideCountInput = document.getElementById("card-slide-count");
