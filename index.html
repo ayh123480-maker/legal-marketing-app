@@ -1297,6 +1297,22 @@ function formatCharCountNote(body){
   return `글자 수 ${n.toLocaleString("ko-KR")}자 · 약 ${min}분 읽기`;
 }
 
+/* 변호사 광고 규정 위반 소지가 있는 표현을 텍스트에서 찾아준다 (완벽한 법률 검토를 대체하지 않음 — 참고용 1차 점검) */
+const AD_RISK_PHRASES = [
+  "100% 승소", "승소 보장", "무조건 승소", "반드시 승소", "승소율 100",
+  "전액 환급 보장", "합의금 보장", "국내 최고", "국내 1위", "업계 1위",
+  "최고의 로펌", "최고의 변호사", "최다 승소", "승소 전문",
+];
+function scanAdRiskPhrases(text){
+  const t = String(text||"");
+  return AD_RISK_PHRASES.filter(p => t.includes(p));
+}
+function formatAdRiskWarning(text){
+  const found = scanAdRiskPhrases(text);
+  if(!found.length) return "";
+  return `<div class="banner" style="background:#f8e6e4;color:var(--seal);display:block;">⚠️ 광고 규정 위반 소지 표현이 발견됐어요: ${found.map(f=>`<b>"${escapeHtml(f)}"</b>`).join(", ")} — 발행 전 표현을 다듬거나 지방변호사회 광고심사를 확인하세요.</div>`;
+}
+
 function renderRewrittenColumn(p){
   const c = p.rewrittenColumn;
   return `
@@ -1305,6 +1321,7 @@ function renderRewrittenColumn(p){
       <input class="field serif" id="rc-title-input" style="width:100%;font-weight:700;font-size:16px;margin-bottom:8px;" value="${escapeHtml(c.title||"")}" />
       <textarea class="field" id="rc-body-textarea" style="width:100%;min-height:240px;font-size:13px;line-height:1.7;">${escapeHtml(c.body||"")}</textarea>
       <div class="section-note" id="rc-charcount" style="margin:6px 0 0 0;">${formatCharCountNote(c.body||"")}</div>
+      <div id="rc-ad-risk-warning">${formatAdRiskWarning(c.body||"")}</div>
       <div style="margin-top:8px;">
         ${(c.tags||[]).map(t=>`<span class="badge" style="background:#eef0f4;color:var(--ink);margin:2px 6px 2px 0;">#${t}</span>`).join("")}
       </div>
@@ -1365,9 +1382,13 @@ function renderCardNewsBlock(p){
     `;
   }).join("");
 
+  const allSlideText = slides.map(s=>`${s.headline||""} ${s.subtext||""}`).join(" ");
+  const adRiskWarning = formatAdRiskWarning(allSlideText);
+
   return `
     <div class="section-title">3단계 · 카드뉴스 이미지 (${slides.length}장) — 직접 수정 가능</div>
     <div class="section-note">카드를 눌러 확대하면 텍스트 편집·이미지 삽입·배경 이미지·색상 변경·위치 이동(드래그, 중앙에서 자동 정렬)이 모두 가능해요.</div>
+    ${adRiskWarning}
     <div style="margin-bottom:12px;">
       <button class="btn outline" id="toggle-bulk-brand-edit-btn" style="font-size:12px;padding:6px 12px;">✏️ 상단 라벨 · 발행 주체 일괄 수정</button>
       ${state.cardBulkEditOpen ? `
@@ -3692,6 +3713,8 @@ function bindRouteEvents(){
       saveColumnDraftToStorage();
       const rcCharcountEl = document.getElementById("rc-charcount");
       if(rcCharcountEl) rcCharcountEl.textContent = formatCharCountNote(rcBodyTextarea.value);
+      const rcAdRiskEl = document.getElementById("rc-ad-risk-warning");
+      if(rcAdRiskEl) rcAdRiskEl.innerHTML = formatAdRiskWarning(rcBodyTextarea.value);
     });
     const copyColumnBtn = document.getElementById("copy-column-btn");
     if(copyColumnBtn) copyColumnBtn.addEventListener("click", ()=>{
