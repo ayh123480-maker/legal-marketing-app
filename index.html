@@ -1291,6 +1291,12 @@ function renderCardNewsSettingsPanel(){
   `;
 }
 
+function formatCharCountNote(body){
+  const n = (body||"").length;
+  const min = Math.max(1, Math.round(n/400)); // 한글 기준 분당 약 400자 읽기 속도로 추정
+  return `글자 수 ${n.toLocaleString("ko-KR")}자 · 약 ${min}분 읽기`;
+}
+
 function renderRewrittenColumn(p){
   const c = p.rewrittenColumn;
   return `
@@ -1298,11 +1304,13 @@ function renderRewrittenColumn(p){
     <div class="card" style="padding:16px;border-left:4px solid var(--amber);">
       <input class="field serif" id="rc-title-input" style="width:100%;font-weight:700;font-size:16px;margin-bottom:8px;" value="${escapeHtml(c.title||"")}" />
       <textarea class="field" id="rc-body-textarea" style="width:100%;min-height:240px;font-size:13px;line-height:1.7;">${escapeHtml(c.body||"")}</textarea>
-      <div style="margin-top:12px;">
+      <div class="section-note" id="rc-charcount" style="margin:6px 0 0 0;">${formatCharCountNote(c.body||"")}</div>
+      <div style="margin-top:8px;">
         ${(c.tags||[]).map(t=>`<span class="badge" style="background:#eef0f4;color:var(--ink);margin:2px 6px 2px 0;">#${t}</span>`).join("")}
       </div>
       <div style="margin-top:16px;border-top:1px solid var(--line);padding-top:14px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
         <button class="btn amber" id="run-reels-btn" ${p.loading.reels?"disabled":""}>${p.loading.reels?"만드는 중...":"3단계: 릴스 대본 만들기"}</button>
+        <button class="btn outline" id="copy-column-btn">📋 복사</button>
         <button class="btn outline" id="upload-notion-btn" ${p.loading.notion?"disabled":""}>${p.loading.notion?"업로드 중...":"📤 노션에 새 페이지로 업로드"}</button>
         ${p.notionUrl ? `<a href="${p.notionUrl}" target="_blank" rel="noopener" class="banner ok" style="margin:0;">✅ 노션 페이지 열기 ↗</a>` : ""}
       </div>
@@ -1738,6 +1746,20 @@ function isDarkColor(hex){
 
 function escapeHtml(s){
   return String(s==null?"":s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+}
+
+/* 클립보드 복사: 버튼 요소를 넘기면 잠깐 "복사됨"으로 바뀌었다가 원래 라벨로 돌아온다 (전체 렌더 없이 처리) */
+async function copyTextToClipboard(text, btnEl){
+  try{
+    await navigator.clipboard.writeText(text);
+    if(btnEl){
+      const original = btnEl.textContent;
+      btnEl.textContent = "✅ 복사됨";
+      setTimeout(()=>{ btnEl.textContent = original; }, 1500);
+    }
+  }catch(e){
+    alert("클립보드 복사에 실패했어요. 직접 드래그해서 복사해주세요.");
+  }
 }
 
 function defaultCardColors(){
@@ -2371,10 +2393,25 @@ async function downloadAllCardsZip(){
   if(btn){ btn.disabled = false; btn.textContent = "🖼️ 전체 카드뉴스 ZIP 다운로드"; }
 }
 
+function reelsScriptToText(r){
+  const lines = [`[오프닝 훅] ${r.hook||""}`, ""];
+  (r.scenes||[]).forEach((sc,i)=>{
+    lines.push(`${i+1}. ${sc.timeRange||""}`);
+    lines.push(`   내레이션: ${sc.narration||""}`);
+    lines.push(`   화면: ${sc.visual||""}${sc.onScreenText ? "  /  자막: "+sc.onScreenText : ""}`);
+    lines.push("");
+  });
+  lines.push(`[CTA] ${r.cta||""}`);
+  return lines.join("\n");
+}
+
 function renderReelsScriptBlock(p){
   const r = p.reelsScript;
   return `
-    <div class="section-title">3단계 · 릴스 대본 (약 ${r.durationSec}초)</div>
+    <div class="section-title" style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;">
+      <span>3단계 · 릴스 대본 (약 ${r.durationSec}초)</span>
+      <button class="btn outline" id="copy-reels-btn" style="font-size:12px;padding:6px 12px;">📋 복사</button>
+    </div>
     <div class="card" style="padding:16px;">
       <div class="serif" style="font-weight:700;margin-bottom:8px;">🎬 오프닝 훅</div>
       <div style="font-size:13px;margin-bottom:14px;">${r.hook}</div>
@@ -3650,7 +3687,24 @@ function bindRouteEvents(){
     const rcTitleInput = document.getElementById("rc-title-input");
     if(rcTitleInput) rcTitleInput.addEventListener("input", ()=>{ state.pipeline.rewrittenColumn.title = rcTitleInput.value; saveColumnDraftToStorage(); });
     const rcBodyTextarea = document.getElementById("rc-body-textarea");
-    if(rcBodyTextarea) rcBodyTextarea.addEventListener("input", ()=>{ state.pipeline.rewrittenColumn.body = rcBodyTextarea.value; saveColumnDraftToStorage(); });
+    if(rcBodyTextarea) rcBodyTextarea.addEventListener("input", ()=>{
+      state.pipeline.rewrittenColumn.body = rcBodyTextarea.value;
+      saveColumnDraftToStorage();
+      const rcCharcountEl = document.getElementById("rc-charcount");
+      if(rcCharcountEl) rcCharcountEl.textContent = formatCharCountNote(rcBodyTextarea.value);
+    });
+    const copyColumnBtn = document.getElementById("copy-column-btn");
+    if(copyColumnBtn) copyColumnBtn.addEventListener("click", ()=>{
+      const c = state.pipeline.rewrittenColumn;
+      if(!c) return;
+      copyTextToClipboard((c.title||"")+"\n\n"+(c.body||""), copyColumnBtn);
+    });
+    const copyReelsBtn = document.getElementById("copy-reels-btn");
+    if(copyReelsBtn) copyReelsBtn.addEventListener("click", ()=>{
+      const r = state.pipeline.reelsScript;
+      if(!r) return;
+      copyTextToClipboard(reelsScriptToText(r), copyReelsBtn);
+    });
     const uploadNotionBtn = document.getElementById("upload-notion-btn");
     if(uploadNotionBtn) uploadNotionBtn.addEventListener("click", runNotionUpload);
     const restoreDraftBtn = document.getElementById("restore-draft-btn");
