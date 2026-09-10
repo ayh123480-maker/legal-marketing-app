@@ -1744,7 +1744,10 @@ function estimateTextHeightPx(text, fontSizePx, lineHeight, boxWidthPx){
 function computeInitialSlideLayout(headline, subtext, isCover, isCta){
   const W = 1080, H = 1350;
   const boxWidth = W * 0.84;
-  const contentTop = isCta ? H*0.30 : (isCover ? H*0.19 : H*0.185);
+  // 콘텐츠가 들어갈 수 있는 영역(밴드)의 위/아래 경계. 예전엔 항상 bandTop에서 시작해서
+  // 텍스트가 적으면 카드 하단이 통째로 비어보였음 — 이제는 이 밴드 안에서 세로로 중앙 정렬한다.
+  const bandTop = isCta ? H*0.30 : (isCover ? H*0.19 : H*0.185);
+  const bandBottom = isCta ? H*0.57 : (isCover ? H*0.78 : H*0.75);
 
   const headlineFontSize = baseFontSizeForType("headline", W, isCover, isCta);
   const headlineLineHeight = 1.18;
@@ -1758,6 +1761,9 @@ function computeInitialSlideLayout(headline, subtext, isCover, isCta){
   const subtextH = Math.max(subtextFontSize*subtextLineHeight, estimateTextHeightPx(subtext, subtextFontSize, subtextLineHeight, boxWidth) + subtextPadding);
 
   const gap = H * 0.035;
+  const blockH = headlineH + gap + subtextH;
+  // 블록이 밴드보다 짧으면 아래로 내려서 밴드 중앙에 오게 하고, 블록이 밴드보다 길면(텍스트가 많으면) bandTop에서 그냥 시작한다.
+  const contentTop = bandTop + Math.max(0, ((bandBottom - bandTop) - blockH) / 2);
   const headlineCenterY = contentTop + headlineH/2;
   const subtextCenterY = contentTop + headlineH + gap + subtextH/2;
 
