@@ -135,6 +135,43 @@
     background:#fff; border-radius:12px; padding:22px; width:420px; max-width:92vw;
     max-height:86vh; overflow:auto;
   }
+
+  .mobile-nav-toggle{
+    display:none; background:transparent; border:1px solid rgba(255,255,255,0.3); color:#fff;
+    border-radius:6px; padding:6px 10px; font-size:16px; line-height:1; cursor:pointer; flex-shrink:0;
+  }
+
+  /* ---- 반응형: 태블릿(가로) — 사이드바는 그대로 두고 폭만 줄임 ---- */
+  @media (max-width: 1200px){
+    #sidebar{ width:180px; }
+    #content{ padding:20px 18px 50px 18px; }
+    #topbar{ padding:14px 18px; }
+  }
+
+  /* ---- 반응형: 모바일 · 세로 태블릿 — 사이드바를 접이식 메뉴로 전환 ---- */
+  @media (max-width: 900px){
+    #app{ flex-direction:column; }
+    #sidebar{ width:100%; height:auto; position:relative; padding:14px 16px; }
+    #sidebar .brand{ display:flex; align-items:center; justify-content:space-between; border-bottom:none; margin-bottom:0; padding:0; }
+    .mobile-nav-toggle{ display:inline-block; }
+    .sidebar-nav{ display:none; margin-top:14px; }
+    .sidebar-nav.open{ display:block; }
+    #sidebar .foot{ margin-top:14px; padding:14px 0 0 0; border-top:1px solid rgba(255,255,255,0.12); }
+    #content{ padding:16px 14px 40px 14px; }
+    #topbar{ padding:12px 16px; gap:8px; }
+    #topbar .page-title{ font-size:17px; }
+    .modal-box{ padding:16px; }
+    .cal-cell{ min-height:76px; padding:4px; }
+    .cal-entry{ font-size:10px; }
+    table{ font-size:12px; }
+  }
+
+  /* 좁은 화면에서 표가 카드 밖으로 넘치지 않고 가로 스크롤되게
+     (표를 감싼 카드 중 일부는 overflow:hidden 인라인 스타일이 있어 !important로 덮어씀) */
+  @media (max-width: 640px){
+    .card{ overflow-x:auto !important; -webkit-overflow-scrolling:touch; }
+    table{ min-width:460px; }
+  }
 </style>
 </head>
 <body>
@@ -204,6 +241,18 @@ async function callBackendAI(prompt, useWebSearch, maxTokens){
   return data.text || "";
 }
 
+/* 재작성된 칼럼을 노션 페이지로 업로드: 실제 Notion API 키는 서버(/api/notion)에만 있다 */
+async function callBackendNotion(payload){
+  const res = await fetch("/api/notion", {
+    method:"POST", headers:{ "Content-Type":"application/json" },
+    body: JSON.stringify(payload)
+  });
+  if(res.status === 401){ redirectToLogin(); throw new Error("로그인이 필요해요."); }
+  const data = await res.json().catch(()=>({}));
+  if(!res.ok) throw new Error(data.error || "노션 업로드가 실패했어요.");
+  return data.url || "";
+}
+
 /* 로그인 여부 확인 후 아니면 로그인 페이지로. 확인되면 앱 로딩 시작 */
 async function guardSessionThenStart(){
   try{
@@ -227,6 +276,7 @@ async function guardSessionThenStart(){
 ========================================================= */
 const state = {
   route: "dashboard", // dashboard | products | campaigns | content | keywords | settings
+  mobileNavOpen: false, // 좁은 화면(모바일·세로 태블릿)에서 사이드바 메뉴를 펼쳤는지 여부
 
   // 회계 앱에서 가져오는 것 (읽기 전용으로 취급)
   products: [],                 // 회계 앱 products 그대로: [{name, ...}] 또는 문자열 배열일 수 있음 → normalizeProducts로 통일
@@ -263,6 +313,12 @@ const state = {
   columnsSettingsOpen: false,  // 칼럼 페이지 내 글쓰기 스타일 설정 패널 펼침 여부 (저장 안 함, 세션 한정)
   cardSettingsOpen: false,     // 카드뉴스 페이지 내 카드뉴스 설정 패널 펼침 여부 (저장 안 함, 세션 한정)
   cardBulkEditOpen: false,     // 완성된 카드뉴스 화면의 "킥커·발행주체 일괄 수정" 패널 펼침 여부 (세션 한정)
+
+  // 콘텐츠 라이브러리 (저장된 칼럼·카드뉴스 프로젝트를 한 곳에서 검색·필터링하는 화면, 세션 한정 필터 상태)
+  librarySearch: "",
+  libraryTypeFilter: "all",   // all | column | cardnews
+  libraryTagFilter: null,     // 선택된 태그 (없으면 null)
+
   pipeline: {
     inputMode: "text",            // text | url
     sourceUrl: "",
@@ -271,7 +327,9 @@ const state = {
     savedJustNow: false,          // 방금 저장했음을 잠깐 보여주기 위한 플래그
     rewrittenColumn: null,        // {title, body, keyPoints:[], tags:[]}
     reelsScript: null,            // {hook, durationSec, scenes:[{timeRange, narration, visual, onScreenText}], cta}
-    loading: { column:false, reels:false },
+    notionUrl: null,              // 방금 업로드한 노션 페이지 주소 (있으면 "노션 페이지 열기" 링크로 표시)
+    publishDateStr: "",           // 발행 예정일 (선택) — 지정하고 저장하면 콘텐츠 캘린더에도 자동 등록됨
+    loading: { column:false, reels:false, notion:false },
     error: null,
   },
 
@@ -288,7 +346,9 @@ const state = {
     cardNews: null,               // {slides:[{no, headline, subtext, layers:[...]}]} — 완성된 카드뉴스
     projectId: null,              // 저장된 카드뉴스를 불러와 편집 중이면 그 id, 새로 만드는 중이면 null
     savedJustNow: false,
-    loading: { draft:false, card:false },
+    notionUrl: null,              // 방금 업로드한 노션 페이지 주소 (텍스트 대본만 업로드 — 이미지는 포함되지 않음)
+    publishDateStr: "",           // 발행 예정일 (선택) — 지정하고 저장하면 콘텐츠 캘린더에도 자동 등록됨
+    loading: { draft:false, card:false, notion:false },
     error: null,
   },
 
@@ -623,6 +683,7 @@ const NAV = [
   { key:"content",   label:"콘텐츠 브레인스토밍" },
   { key:"columns",   label:"칼럼 재구성하기" },
   { key:"cardnews",  label:"카드뉴스 만들기" },
+  { key:"library",   label:"콘텐츠 라이브러리" },
   { key:"keywords",  label:"키워드 트렌드" },
   { key:"settings",  label:"연동 설정" },
 ];
@@ -640,10 +701,13 @@ function render(){
   app.innerHTML = `
     <div id="sidebar">
       <div class="brand">
-        <div class="eyebrow">Marketing Ops</div>
-        <div class="title serif">마케팅 성과 도구</div>
+        <div>
+          <div class="eyebrow">Marketing Ops</div>
+          <div class="title serif">마케팅 성과 도구</div>
+        </div>
+        <button class="mobile-nav-toggle" id="mobile-nav-toggle" aria-label="메뉴 열기">${state.mobileNavOpen ? "✕" : "☰"}</button>
       </div>
-      <div>
+      <div class="sidebar-nav ${state.mobileNavOpen ? 'open' : ''}">
         ${NAV.map(n => `
           <div class="nav-item ${state.route===n.key?'active':''}" data-route="${n.key}">
             <span class="dot"></span>${n.label}
@@ -665,8 +729,10 @@ function render(){
     </div>
   `;
   document.querySelectorAll(".nav-item").forEach(el=>{
-    el.addEventListener("click", ()=>{ state.route = el.dataset.route; render(); });
+    el.addEventListener("click", ()=>{ state.route = el.dataset.route; state.mobileNavOpen = false; render(); });
   });
+  const mobileNavToggle = document.getElementById("mobile-nav-toggle");
+  if(mobileNavToggle) mobileNavToggle.addEventListener("click", ()=>{ state.mobileNavOpen = !state.mobileNavOpen; render(); });
   const logoutBtn = document.getElementById("logout-btn");
   if(logoutBtn) logoutBtn.addEventListener("click", async ()=>{
     try{ await fetch("/api/logout", { method:"POST" }); }catch(e){}
@@ -689,6 +755,7 @@ function topbarContent(){
     content: ["콘텐츠 브레인스토밍","상품·주제 기반으로 콘텐츠 아이디어를 생성합니다"],
     columns: ["칼럼 재구성하기","원본 칼럼을 완전히 새로운 문장으로 재작성하고, 릴스 대본까지 만듭니다"],
     cardnews: ["카드뉴스 만들기","만들고 싶은 내용을 입력하면 대본 초안부터 완성본까지 만듭니다"],
+    library: ["콘텐츠 라이브러리","저장된 칼럼·카드뉴스를 검색하고 발행 현황을 한눈에 봅니다"],
     keywords: ["키워드 트렌드","최근 뜨는 키워드를 상품에 연결해 분석합니다"],
     settings: ["연동 설정","회계 앱과의 데이터 연동 상태를 확인합니다"],
   };
@@ -705,6 +772,7 @@ function routeContent(){
     case "content": return renderContent();
     case "columns": return renderColumns();
     case "cardnews": return renderCardNews();
+    case "library": return renderLibrary();
     case "keywords": return renderKeywords();
     case "settings": return renderSettings();
     default: return "";
@@ -987,12 +1055,65 @@ function renderPlanModal(){
   `;
 }
 
+/* ---- 초안 자동 복구: 실수로 새로고침해도 작업 중이던 칼럼 입력이 로컬(이 브라우저)에 남아있으면 복구할 수 있게 ----
+   저장된 프로젝트(projectId 있음)를 편집 중일 때는 별도 초안을 만들지 않는다 (이미 서버에 저장되고 있으므로 중복 불필요) */
+const COLUMN_DRAFT_KEY = "mkt:columnDraftV1";
+
+function saveColumnDraftToStorage(){
+  try{
+    const p = state.pipeline;
+    if(p.projectId){ localStorage.removeItem(COLUMN_DRAFT_KEY); return; }
+    if(!p.sourceText && !p.sourceUrl && !p.rewrittenColumn){ localStorage.removeItem(COLUMN_DRAFT_KEY); return; }
+    localStorage.setItem(COLUMN_DRAFT_KEY, JSON.stringify({
+      inputMode: p.inputMode, sourceUrl: p.sourceUrl, sourceText: p.sourceText,
+      rewrittenColumn: p.rewrittenColumn, savedAt: Date.now(),
+    }));
+  }catch(e){}
+}
+
+function readColumnDraftFromStorage(){
+  try{
+    const raw = localStorage.getItem(COLUMN_DRAFT_KEY);
+    if(!raw) return null;
+    const draft = JSON.parse(raw);
+    if(!draft || (!draft.sourceText && !draft.sourceUrl && !draft.rewrittenColumn)) return null;
+    if(Date.now() - (draft.savedAt||0) > 1000*60*60*24*14) return null; // 2주 지난 초안은 무시
+    return draft;
+  }catch(e){ return null; }
+}
+
+function clearColumnDraftFromStorage(){
+  try{ localStorage.removeItem(COLUMN_DRAFT_KEY); }catch(e){}
+}
+
+function restoreColumnDraft(){
+  const draft = readColumnDraftFromStorage();
+  if(!draft) return;
+  const p = state.pipeline;
+  p.inputMode = draft.inputMode || "text";
+  p.sourceUrl = draft.sourceUrl || "";
+  p.sourceText = draft.sourceText || "";
+  p.rewrittenColumn = draft.rewrittenColumn || null;
+  clearColumnDraftFromStorage();
+  render();
+}
+
 /* ---- 칼럼 재작성 → 카드뉴스 → 릴스대본 파이프라인 ---- */
 function renderColumns(){
   const p = state.pipeline;
   const savedList = state.columnProjects.slice().reverse().map(renderSavedColumnProject).join("");
+  const isPristine = !p.projectId && !p.rewrittenColumn && !p.sourceText && !p.sourceUrl;
+  const draft = isPristine ? readColumnDraftFromStorage() : null;
+  const draftBanner = draft ? `
+    <div class="banner info" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+      💾 이전에 작성하던 칼럼 초안이 남아있어요 (${new Date(draft.savedAt).toLocaleString("ko-KR")})
+      <button class="btn amber" id="restore-draft-btn" style="font-size:11px;padding:5px 10px;">복구하기</button>
+      <button class="btn outline" id="dismiss-draft-btn" style="font-size:11px;padding:5px 10px;">닫기</button>
+    </div>
+  ` : "";
 
   return `
+    ${draftBanner}
     <div class="card" style="padding:0;margin-bottom:16px;overflow:hidden;">
       <div id="toggle-style-settings" style="padding:14px 16px;display:flex;justify-content:space-between;align-items:center;cursor:pointer;">
         <div style="font-weight:700;font-size:14px;">⚙️ 글쓰기 스타일 설정 (문체 가이드 · 템플릿)</div>
@@ -1031,8 +1152,9 @@ function renderColumns(){
       <button class="btn amber" id="run-column-btn" ${p.loading.column?"disabled":""}>${p.loading.column?"재작성 중...":"칼럼 재작성하기"}</button>
       ${(p.rewrittenColumn||p.reelsScript) ? `<button class="btn outline" id="reset-pipeline-btn" style="margin-left:8px;">새 프로젝트 시작</button>` : ""}
       ${p.rewrittenColumn ? `
+        <input type="date" class="field" id="col-publish-date-input" style="margin-left:8px;" value="${p.publishDateStr||""}" title="발행 예정일 (선택 — 지정하고 저장하면 콘텐츠 캘린더에도 자동 등록돼요)" />
         <button class="btn amber" id="save-project-btn" style="margin-left:8px;">${p.projectId ? "💾 변경사항 저장" : "✅ 프로젝트로 저장"}</button>
-        ${p.savedJustNow ? `<span class="banner ok" style="margin-left:8px;">저장됨</span>` : ""}
+        ${p.savedJustNow ? `<span class="banner ok" style="margin-left:8px;">저장됨${p.publishDateStr ? " · 캘린더 등록됨" : ""}</span>` : ""}
       ` : ""}
     </div>
 
@@ -1094,8 +1216,9 @@ function renderCardNews(){
       <button class="btn amber" id="run-card-draft-btn" ${p.loading.draft?"disabled":""}>${p.loading.draft?"대본 초안 만드는 중...":"카드뉴스 대본 만들기"}</button>
       ${(p.cardOutline||p.cardNews) ? `<button class="btn outline" id="reset-cardpipeline-btn" style="margin-left:8px;">새 카드뉴스 시작</button>` : ""}
       ${p.cardNews ? `
+        <input type="date" class="field" id="cardnews-publish-date-input" style="margin-left:8px;" value="${p.publishDateStr||""}" title="발행 예정일 (선택 — 지정하고 저장하면 콘텐츠 캘린더에도 자동 등록돼요)" />
         <button class="btn amber" id="save-cardnews-project-btn" style="margin-left:8px;">${p.projectId ? "💾 변경사항 저장" : "✅ 카드뉴스로 저장"}</button>
-        ${p.savedJustNow ? `<span class="banner ok" style="margin-left:8px;">저장됨</span>` : ""}
+        ${p.savedJustNow ? `<span class="banner ok" style="margin-left:8px;">저장됨${p.publishDateStr ? " · 캘린더 등록됨" : ""}</span>` : ""}
       ` : ""}
     </div>
 
@@ -1211,18 +1334,45 @@ function renderCardNewsSettingsPanel(){
   `;
 }
 
+function formatCharCountNote(body){
+  const n = (body||"").length;
+  const min = Math.max(1, Math.round(n/400)); // 한글 기준 분당 약 400자 읽기 속도로 추정
+  return `글자 수 ${n.toLocaleString("ko-KR")}자 · 약 ${min}분 읽기`;
+}
+
+/* 변호사 광고 규정 위반 소지가 있는 표현을 텍스트에서 찾아준다 (완벽한 법률 검토를 대체하지 않음 — 참고용 1차 점검) */
+const AD_RISK_PHRASES = [
+  "100% 승소", "승소 보장", "무조건 승소", "반드시 승소", "승소율 100",
+  "전액 환급 보장", "합의금 보장", "국내 최고", "국내 1위", "업계 1위",
+  "최고의 로펌", "최고의 변호사", "최다 승소", "승소 전문",
+];
+function scanAdRiskPhrases(text){
+  const t = String(text||"");
+  return AD_RISK_PHRASES.filter(p => t.includes(p));
+}
+function formatAdRiskWarning(text){
+  const found = scanAdRiskPhrases(text);
+  if(!found.length) return "";
+  return `<div class="banner" style="background:#f8e6e4;color:var(--seal);display:block;">⚠️ 광고 규정 위반 소지 표현이 발견됐어요: ${found.map(f=>`<b>"${escapeHtml(f)}"</b>`).join(", ")} — 발행 전 표현을 다듬거나 지방변호사회 광고심사를 확인하세요.</div>`;
+}
+
 function renderRewrittenColumn(p){
   const c = p.rewrittenColumn;
   return `
-    <div class="section-title">2단계 · 재작성된 칼럼</div>
+    <div class="section-title">2단계 · 재작성된 칼럼 — 내용을 다듬은 뒤 진행하세요</div>
     <div class="card" style="padding:16px;border-left:4px solid var(--amber);">
-      <div class="serif" style="font-weight:700;font-size:16px;margin-bottom:8px;">${c.title}</div>
-      <div style="font-size:13px;line-height:1.7;white-space:pre-wrap;">${c.body}</div>
-      <div style="margin-top:12px;">
+      <input class="field serif" id="rc-title-input" style="width:100%;font-weight:700;font-size:16px;margin-bottom:8px;" value="${escapeHtml(c.title||"")}" />
+      <textarea class="field" id="rc-body-textarea" style="width:100%;min-height:240px;font-size:13px;line-height:1.7;">${escapeHtml(c.body||"")}</textarea>
+      <div class="section-note" id="rc-charcount" style="margin:6px 0 0 0;">${formatCharCountNote(c.body||"")}</div>
+      <div id="rc-ad-risk-warning">${formatAdRiskWarning(c.body||"")}</div>
+      <div style="margin-top:8px;">
         ${(c.tags||[]).map(t=>`<span class="badge" style="background:#eef0f4;color:var(--ink);margin:2px 6px 2px 0;">#${t}</span>`).join("")}
       </div>
-      <div style="margin-top:16px;border-top:1px solid var(--line);padding-top:14px;">
+      <div style="margin-top:16px;border-top:1px solid var(--line);padding-top:14px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
         <button class="btn amber" id="run-reels-btn" ${p.loading.reels?"disabled":""}>${p.loading.reels?"만드는 중...":"3단계: 릴스 대본 만들기"}</button>
+        <button class="btn outline" id="copy-column-btn">📋 복사</button>
+        <button class="btn outline" id="upload-notion-btn" ${p.loading.notion?"disabled":""}>${p.loading.notion?"업로드 중...":"📤 노션에 새 페이지로 업로드"}</button>
+        ${p.notionUrl ? `<a href="${p.notionUrl}" target="_blank" rel="noopener" class="banner ok" style="margin:0;">✅ 노션 페이지 열기 ↗</a>` : ""}
       </div>
     </div>
   `;
@@ -1255,6 +1405,10 @@ function renderCardOutlineBlock(p){
   `;
 }
 
+function cardNewsSlidesToText(slides){
+  return (slides||[]).map((s,i)=> `${i+1}. ${s.headline||""}${s.subtext ? "\n   "+s.subtext : ""}`).join("\n\n");
+}
+
 function renderCardNewsBlock(p){
   const cn = p.cardNews;
   const brand = state.brandSettings || {};
@@ -1275,9 +1429,13 @@ function renderCardNewsBlock(p){
     `;
   }).join("");
 
+  const allSlideText = slides.map(s=>`${s.headline||""} ${s.subtext||""}`).join(" ");
+  const adRiskWarning = formatAdRiskWarning(allSlideText);
+
   return `
     <div class="section-title">3단계 · 카드뉴스 이미지 (${slides.length}장) — 직접 수정 가능</div>
     <div class="section-note">카드를 눌러 확대하면 텍스트 편집·이미지 삽입·배경 이미지·색상 변경·위치 이동(드래그, 중앙에서 자동 정렬)이 모두 가능해요.</div>
+    ${adRiskWarning}
     <div style="margin-bottom:12px;">
       <button class="btn outline" id="toggle-bulk-brand-edit-btn" style="font-size:12px;padding:6px 12px;">✏️ 상단 라벨 · 발행 주체 일괄 수정</button>
       ${state.cardBulkEditOpen ? `
@@ -1298,7 +1456,11 @@ function renderCardNewsBlock(p){
     ${rows}
     <div style="margin-top:14px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
       <button class="btn amber" id="download-all-cards-btn">🖼️ 전체 카드뉴스 ZIP 다운로드</button>
+      <button class="btn outline" id="copy-cardnews-btn">📋 슬라이드 텍스트 복사</button>
+      <button class="btn outline" id="upload-cardnews-notion-btn" ${p.loading.notion?"disabled":""}>${p.loading.notion?"업로드 중...":"📤 노션에 대본 업로드"}</button>
+      ${p.notionUrl ? `<a href="${p.notionUrl}" target="_blank" rel="noopener" class="banner ok" style="margin:0;">✅ 노션 페이지 열기 ↗</a>` : ""}
     </div>
+    <div class="section-note" style="margin-top:6px;">노션 업로드는 슬라이드 텍스트 대본만 올라가요 (이미지는 포함되지 않음) — 이미지는 위 ZIP 다운로드로 따로 받아서 첨부해주세요.</div>
   `;
 }
 
@@ -1653,6 +1815,20 @@ function isDarkColor(hex){
 
 function escapeHtml(s){
   return String(s==null?"":s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+}
+
+/* 클립보드 복사: 버튼 요소를 넘기면 잠깐 "복사됨"으로 바뀌었다가 원래 라벨로 돌아온다 (전체 렌더 없이 처리) */
+async function copyTextToClipboard(text, btnEl){
+  try{
+    await navigator.clipboard.writeText(text);
+    if(btnEl){
+      const original = btnEl.textContent;
+      btnEl.textContent = "✅ 복사됨";
+      setTimeout(()=>{ btnEl.textContent = original; }, 1500);
+    }
+  }catch(e){
+    alert("클립보드 복사에 실패했어요. 직접 드래그해서 복사해주세요.");
+  }
 }
 
 function defaultCardColors(){
@@ -2286,10 +2462,25 @@ async function downloadAllCardsZip(){
   if(btn){ btn.disabled = false; btn.textContent = "🖼️ 전체 카드뉴스 ZIP 다운로드"; }
 }
 
+function reelsScriptToText(r){
+  const lines = [`[오프닝 훅] ${r.hook||""}`, ""];
+  (r.scenes||[]).forEach((sc,i)=>{
+    lines.push(`${i+1}. ${sc.timeRange||""}`);
+    lines.push(`   내레이션: ${sc.narration||""}`);
+    lines.push(`   화면: ${sc.visual||""}${sc.onScreenText ? "  /  자막: "+sc.onScreenText : ""}`);
+    lines.push("");
+  });
+  lines.push(`[CTA] ${r.cta||""}`);
+  return lines.join("\n");
+}
+
 function renderReelsScriptBlock(p){
   const r = p.reelsScript;
   return `
-    <div class="section-title">3단계 · 릴스 대본 (약 ${r.durationSec}초)</div>
+    <div class="section-title" style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;">
+      <span>3단계 · 릴스 대본 (약 ${r.durationSec}초)</span>
+      <button class="btn outline" id="copy-reels-btn" style="font-size:12px;padding:6px 12px;">📋 복사</button>
+    </div>
     <div class="card" style="padding:16px;">
       <div class="serif" style="font-weight:700;margin-bottom:8px;">🎬 오프닝 훅</div>
       <div style="font-size:13px;margin-bottom:14px;">${r.hook}</div>
@@ -2711,10 +2902,11 @@ async function runColumnGeneration(){
   if(p.inputMode==="youtube" && !p.sourceUrl.trim()){ p.error = "유튜브 영상 링크를 입력해주세요."; render(); return; }
   if(p.inputMode==="text" && !p.sourceText.trim()){ p.error = "원본 칼럼 텍스트를 입력해주세요."; render(); return; }
   p.loading.column = true;
-  p.rewrittenColumn = null; p.reelsScript = null;
+  p.rewrittenColumn = null; p.reelsScript = null; p.notionUrl = null;
   render();
   try{
     p.rewrittenColumn = await generateRewrittenColumn();
+    saveColumnDraftToStorage();
   }catch(e){
     p.error = "칼럼 재작성 중 문제가 생겼어요: " + e.message;
   }
@@ -2808,13 +3000,34 @@ async function runCardOutlineRegeneration(){
 
 async function runCardFinalizeGeneration(){
   const p = state.cardPipeline;
-  p.loading.card = true; p.error = null; render();
+  p.loading.card = true; p.error = null; p.notionUrl = null; render();
   try{
     p.cardNews = normalizeCardNews(await generateCardNewsScript(p, p.baseContent));
   }catch(e){
     p.error = "카드뉴스 생성 중 문제가 생겼어요: " + e.message;
   }
   p.loading.card = false;
+  render();
+}
+
+/* 완성된 카드뉴스의 슬라이드 텍스트(헤드라인·서브텍스트)만 노션 페이지로 업로드 — 이미지는 포함 안 됨(ZIP으로 별도 다운로드) */
+async function runCardNewsNotionUpload(){
+  const p = state.cardPipeline;
+  if(!p.cardNews) return;
+  p.loading.notion = true; p.error = null; p.notionUrl = null; render();
+  try{
+    const title = (p.baseContent && p.baseContent.title) || "카드뉴스 대본";
+    const slides = p.cardNews.slides || [];
+    const bullets = slides.map((s,i)=> `${i+1}. ${s.headline||""}${s.subtext ? " — "+s.subtext : ""}`);
+    p.notionUrl = await callBackendNotion({
+      title,
+      body: "카드뉴스 대본 초안이에요. (이미지는 포함되지 않아요 — 완성된 이미지는 앱에서 ZIP으로 다운로드해서 따로 첨부해주세요.)",
+      extraSections: [{ heading: `🖼️ 카드뉴스 슬라이드 (${slides.length}장)`, bullets }],
+    });
+  }catch(e){
+    p.error = "노션 업로드 중 문제가 생겼어요: " + e.message;
+  }
+  p.loading.notion = false;
   render();
 }
 
@@ -2827,6 +3040,35 @@ async function runReelsGeneration(){
     p.error = "릴스 대본 생성 중 문제가 생겼어요: " + e.message;
   }
   p.loading.reels = false;
+  render();
+}
+
+async function runNotionUpload(){
+  const p = state.pipeline;
+  if(!p.rewrittenColumn) return;
+  p.loading.notion = true; p.error = null; p.notionUrl = null; render();
+  try{
+    const c = p.rewrittenColumn;
+    const payload = { title: c.title, body: c.body, keyPoints: c.keyPoints, tags: c.tags };
+    if(p.reelsScript){
+      const rs = p.reelsScript;
+      const sceneLines = (rs.scenes||[]).map((sc,i)=>
+        `${i+1}. [${sc.timeRange||""}] ${sc.narration||""}${sc.onScreenText ? " (자막: "+sc.onScreenText+")" : ""}`
+      );
+      payload.extraSections = [{
+        heading: "🎬 릴스 대본",
+        paragraphs: [
+          rs.hook ? "HOOK: " + rs.hook : "",
+          "길이: 약 " + (rs.durationSec||30) + "초",
+        ].filter(Boolean),
+        bullets: sceneLines.concat(rs.cta ? ["CTA: " + rs.cta] : []),
+      }];
+    }
+    p.notionUrl = await callBackendNotion(payload);
+  }catch(e){
+    p.error = "노션 업로드 중 문제가 생겼어요: " + e.message;
+  }
+  p.loading.notion = false;
   render();
 }
 
@@ -2856,6 +3098,24 @@ async function saveColumnProject(){
     });
   }
   await saveColumnProjects();
+  clearColumnDraftFromStorage(); // 이제 서버에 정식 저장됐으니 로컬 임시 초안은 정리
+  // 발행 예정일을 지정했으면 콘텐츠 캘린더에도 자동 등록 (비워두면 기존 등록을 정리)
+  if(p.publishDateStr){
+    await upsertContentPlan({
+      id: "cp-col-"+p.projectId,
+      dateStr: p.publishDateStr,
+      title: "📝 " + ((p.rewrittenColumn && p.rewrittenColumn.title) || "(제목 없음)"),
+      product: "",
+      contentType: "칼럼",
+      planDetail: "콘텐츠 라이브러리에서 자동 연동된 칼럼 재구성 프로젝트",
+      actualDetail: "",
+      status: "plan",
+      linkedEventId: null,
+      createdAt: now,
+    });
+  } else {
+    await removeContentPlan("cp-col-"+p.projectId);
+  }
   p.savedJustNow = true;
   render();
   setTimeout(()=>{ state.pipeline.savedJustNow = false; render(); }, 2200);
@@ -2866,8 +3126,8 @@ function resetPipeline(){
     inputMode: state.pipeline.inputMode,
     sourceUrl: "", sourceText: "",
     projectId: null, savedJustNow: false,
-    rewrittenColumn: null, reelsScript: null,
-    loading: { column:false, reels:false },
+    rewrittenColumn: null, reelsScript: null, notionUrl: null, publishDateStr: "",
+    loading: { column:false, reels:false, notion:false },
     error: null,
   };
   render();
@@ -2876,13 +3136,16 @@ function resetPipeline(){
 function loadColumnProject(id){
   const item = state.columnProjects.find(x=>x.id===id);
   if(!item) return;
+  const linkedPlan = state.contentPlans.find(cp=>cp.id==="cp-col-"+id);
   state.pipeline = {
     inputMode: "text",
     sourceUrl: "", sourceText: "",
     projectId: item.id, savedJustNow: false,
     rewrittenColumn: item.rewrittenColumn,
     reelsScript: item.reelsScript,
-    loading: { column:false, reels:false },
+    notionUrl: null,
+    publishDateStr: (linkedPlan && linkedPlan.dateStr) || "",
+    loading: { column:false, reels:false, notion:false },
     error: null,
   };
   render();
@@ -2892,6 +3155,7 @@ async function deleteColumnProject(id){
   state.columnProjects = state.columnProjects.filter(x=>x.id!==id);
   if(state.pipeline.projectId === id) state.pipeline.projectId = null;
   await saveColumnProjects();
+  await removeContentPlan("cp-col-"+id); // 연동된 캘린더 항목이 있으면 함께 정리 (없으면 조용히 무시)
   render();
 }
 
@@ -2921,6 +3185,23 @@ async function saveCardNewsProject(){
     });
   }
   await saveCardNewsProjects();
+  // 발행 예정일을 지정했으면 콘텐츠 캘린더에도 자동 등록 (비워두면 기존 등록을 정리)
+  if(p.publishDateStr){
+    await upsertContentPlan({
+      id: "cp-cn-"+p.projectId,
+      dateStr: p.publishDateStr,
+      title: "🖼️ " + ((p.baseContent && p.baseContent.title) || "(제목 없음)"),
+      product: "",
+      contentType: "카드뉴스",
+      planDetail: "콘텐츠 라이브러리에서 자동 연동된 카드뉴스 프로젝트",
+      actualDetail: "",
+      status: "plan",
+      linkedEventId: null,
+      createdAt: now,
+    });
+  } else {
+    await removeContentPlan("cp-cn-"+p.projectId);
+  }
   p.savedJustNow = true;
   render();
   setTimeout(()=>{ state.cardPipeline.savedJustNow = false; render(); }, 2200);
@@ -2933,8 +3214,8 @@ function resetCardPipeline(){
     slideCount: state.cardPipeline.slideCount || 8,
     cardDensity: state.cardPipeline.cardDensity || "medium",
     baseContent: null, cardOutline: null, cardNews: null,
-    projectId: null, savedJustNow: false,
-    loading: { draft:false, card:false },
+    projectId: null, savedJustNow: false, notionUrl: null, publishDateStr: "",
+    loading: { draft:false, card:false, notion:false },
     error: null,
   };
   render();
@@ -2943,6 +3224,7 @@ function resetCardPipeline(){
 function loadCardNewsProject(id){
   const item = state.cardNewsProjects.find(x=>x.id===id);
   if(!item) return;
+  const linkedPlan = state.contentPlans.find(cp=>cp.id==="cp-cn-"+id);
   state.cardPipeline = {
     inputMode: "text",
     sourceUrl: "", sourceText: "",
@@ -2951,8 +3233,9 @@ function loadCardNewsProject(id){
     baseContent: item.baseContent || null,
     cardOutline: item.cardOutline || null,
     cardNews: normalizeCardNews(item.cardNews),
-    projectId: item.id, savedJustNow: false,
-    loading: { draft:false, card:false },
+    projectId: item.id, savedJustNow: false, notionUrl: null,
+    publishDateStr: (linkedPlan && linkedPlan.dateStr) || "",
+    loading: { draft:false, card:false, notion:false },
     error: null,
   };
   render();
@@ -2962,7 +3245,202 @@ async function deleteCardNewsProject(id){
   state.cardNewsProjects = state.cardNewsProjects.filter(x=>x.id!==id);
   if(state.cardPipeline.projectId === id) state.cardPipeline.projectId = null;
   await saveCardNewsProjects();
+  await removeContentPlan("cp-cn-"+id); // 연동된 캘린더 항목이 있으면 함께 정리 (없으면 조용히 무시)
   render();
+}
+
+/* ---- 콘텐츠 라이브러리: 저장된 칼럼·카드뉴스 프로젝트를 한 곳에서 검색·필터링 (읽기 전용 뷰, 기존 저장 목록과 별개) ---- */
+function libraryItems(){
+  const cols = state.columnProjects.map(item => ({
+    type: "column", id: item.id,
+    title: (item.rewrittenColumn && item.rewrittenColumn.title) || "(제목 없음)",
+    tags: (item.rewrittenColumn && item.rewrittenColumn.tags) || [],
+    createdAt: item.createdAt, updatedAt: item.updatedAt,
+    hasReels: !!item.reelsScript,
+    publishDateStr: (state.contentPlans.find(cp=>cp.id==="cp-col-"+item.id)||{}).dateStr || "",
+  }));
+  const cards = state.cardNewsProjects.map(item => ({
+    type: "cardnews", id: item.id,
+    title: (item.baseContent && item.baseContent.title) || "(제목 없음)",
+    tags: [],
+    createdAt: item.createdAt, updatedAt: item.updatedAt,
+    slideCount: (item.cardNews && item.cardNews.slides && item.cardNews.slides.length) || 0,
+    publishDateStr: (state.contentPlans.find(cp=>cp.id==="cp-cn-"+item.id)||{}).dateStr || "",
+  }));
+  return cols.concat(cards).sort((a,b)=> new Date(b.updatedAt||b.createdAt) - new Date(a.updatedAt||a.createdAt));
+}
+
+function libraryItemsToCsv(items){
+  const escapeCsv = (v) => `"${String(v==null?"":v).replace(/"/g,'""')}"`;
+  const header = ["유형","제목","태그","발행예정일","작성일","수정일"];
+  const rows = items.map(it => [
+    it.type==="column" ? "칼럼" : "카드뉴스",
+    it.title,
+    (it.tags||[]).join(" "),
+    it.publishDateStr||"",
+    it.createdAt ? new Date(it.createdAt).toLocaleDateString("ko-KR") : "",
+    it.updatedAt ? new Date(it.updatedAt).toLocaleDateString("ko-KR") : "",
+  ]);
+  return [header].concat(rows).map(r=>r.map(escapeCsv).join(",")).join("\r\n");
+}
+
+function downloadLibraryCsv(){
+  const items = filteredLibraryItems();
+  const csv = "﻿" + libraryItemsToCsv(items); // BOM 포함 — 엑셀에서 한글 깨짐 방지
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "콘텐츠_라이브러리_" + new Date().toISOString().slice(0,10) + ".csv";
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+function libraryStats(items){
+  const now = new Date();
+  const thisMonthKey = now.getFullYear()+"-"+String(now.getMonth()+1).padStart(2,"0");
+  const thisMonthCount = items.filter(it=>{
+    const d = new Date(it.createdAt);
+    return !isNaN(d) && (d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")) === thisMonthKey;
+  }).length;
+  const tagCounts = {};
+  items.forEach(it => (it.tags||[]).forEach(t=>{ tagCounts[t] = (tagCounts[t]||0)+1; }));
+  const topTags = Object.entries(tagCounts).sort((a,b)=>b[1]-a[1]).slice(0,8);
+  return {
+    total: items.length,
+    columnCount: items.filter(it=>it.type==="column").length,
+    cardnewsCount: items.filter(it=>it.type==="cardnews").length,
+    thisMonthCount, topTags,
+  };
+}
+
+function filteredLibraryItems(){
+  const q = (state.librarySearch||"").trim().toLowerCase();
+  return libraryItems().filter(it=>{
+    if(state.libraryTypeFilter!=="all" && it.type!==state.libraryTypeFilter) return false;
+    if(state.libraryTagFilter && !(it.tags||[]).includes(state.libraryTagFilter)) return false;
+    if(q && !it.title.toLowerCase().includes(q)) return false;
+    return true;
+  });
+}
+
+function renderLibraryResultRow(it){
+  const dateLabel = new Date(it.updatedAt || it.createdAt).toLocaleDateString("ko-KR");
+  const typeBadge = it.type==="column"
+    ? `<span class="badge" style="background:#eef0f4;color:var(--ink);">📝 칼럼${it.hasReels ? " · 릴스 포함" : ""}</span>`
+    : `<span class="badge" style="background:#fdf1e2;color:var(--amber);">🖼️ 카드뉴스 · ${it.slideCount}장</span>`;
+  const publishBadge = it.publishDateStr ? `<span class="badge" style="background:#e5f0ec;color:var(--teal);">📅 발행예정 ${it.publishDateStr}</span>` : "";
+  const tagsHtml = (it.tags||[]).map(t=>`<span class="badge" style="background:#eef0f4;color:var(--ink);margin:2px 4px 0 0;">#${escapeHtml(t)}</span>`).join("");
+  return `
+    <div class="idea-card">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap;">
+        <div style="min-width:0;">
+          <div class="kw">${typeBadge}${publishBadge ? " " + publishBadge : ""} · ${dateLabel}</div>
+          <div style="font-weight:600;">${escapeHtml(it.title)}</div>
+          ${tagsHtml ? `<div style="margin-top:6px;">${tagsHtml}</div>` : ""}
+        </div>
+        <div style="display:flex;gap:6px;white-space:nowrap;">
+          <button class="btn outline" data-lib-open="${it.type}:${it.id}" style="font-size:11px;padding:5px 10px;">열기 →</button>
+          <button class="btn outline" data-lib-delete="${it.type}:${it.id}" style="font-size:11px;padding:5px 10px;border-color:var(--seal);color:var(--seal);">삭제</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function renderLibraryResultsInner(){
+  const filtered = filteredLibraryItems();
+  if(filtered.length===0){
+    return `<div class="empty-state"><div class="big">🔍</div>저장된 항목이 없거나 검색 결과가 없어요.</div>`;
+  }
+  return filtered.map(renderLibraryResultRow).join("");
+}
+
+function todayDateStr(){
+  const d = new Date();
+  return d.getFullYear()+"-"+pad2(d.getMonth()+1)+"-"+pad2(d.getDate());
+}
+function dateStrPlusDays(n){
+  const d = new Date();
+  d.setDate(d.getDate()+n);
+  return d.getFullYear()+"-"+pad2(d.getMonth()+1)+"-"+pad2(d.getDate());
+}
+
+function renderUpcomingPublishSection(items){
+  const today = todayDateStr();
+  const until = dateStrPlusDays(7);
+  const upcoming = items
+    .filter(it => it.publishDateStr && it.publishDateStr >= today && it.publishDateStr <= until)
+    .sort((a,b) => a.publishDateStr.localeCompare(b.publishDateStr));
+  if(!upcoming.length) return "";
+  const rows = upcoming.map(it=>{
+    const typeIcon = it.type==="column" ? "📝" : "🖼️";
+    const isToday = it.publishDateStr === today;
+    return `
+      <div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--line);">
+        <span class="badge" style="background:${isToday?'#f8e6e4':'#e5f0ec'};color:${isToday?'var(--seal)':'var(--teal)'};flex-shrink:0;">${isToday?"오늘":it.publishDateStr}</span>
+        <span style="flex:1;min-width:0;font-size:13px;">${typeIcon} ${escapeHtml(it.title)}</span>
+        <button class="btn outline" data-lib-open="${it.type}:${it.id}" style="font-size:11px;padding:4px 10px;flex-shrink:0;">열기 →</button>
+      </div>
+    `;
+  }).join("");
+  return `
+    <div class="card" style="padding:16px;margin-bottom:16px;border-left:4px solid var(--teal);">
+      <div style="font-weight:700;font-size:14px;margin-bottom:4px;">📅 다가오는 발행 일정 (7일 이내)</div>
+      ${rows}
+    </div>
+  `;
+}
+
+function bindLibraryResultButtons(){
+  document.querySelectorAll("[data-lib-open]").forEach(btn=>{
+    btn.addEventListener("click", ()=>{
+      const [type, id] = btn.dataset.libOpen.split(":");
+      if(type === "column"){ state.route = "columns"; loadColumnProject(id); }
+      else { state.route = "cardnews"; loadCardNewsProject(id); }
+    });
+  });
+  document.querySelectorAll("[data-lib-delete]").forEach(btn=>{
+    btn.addEventListener("click", ()=>{
+      const [type, id] = btn.dataset.libDelete.split(":");
+      if(type === "column") deleteColumnProject(id);
+      else deleteCardNewsProject(id);
+    });
+  });
+}
+
+function renderLibrary(){
+  const items = libraryItems();
+  const stats = libraryStats(items);
+  const statCards = `
+    <div class="summary-grid" style="margin-bottom:20px;">
+      <div class="summary-card"><div class="label">전체 콘텐츠</div><div class="value">${stats.total}</div><div class="sub">칼럼 ${stats.columnCount} · 카드뉴스 ${stats.cardnewsCount}</div></div>
+      <div class="summary-card"><div class="label">이번 달 작성</div><div class="value">${stats.thisMonthCount}</div><div class="sub">${new Date().getFullYear()}년 ${new Date().getMonth()+1}월 기준</div></div>
+      <div class="summary-card"><div class="label">가장 많이 쓴 태그</div><div class="value" style="font-size:14px;">${stats.topTags.length ? stats.topTags.slice(0,3).map(([t])=>"#"+t).join(", ") : "—"}</div><div class="sub">칼럼 태그 기준</div></div>
+    </div>
+  `;
+  const tagChips = stats.topTags.map(([t,count])=>`
+    <span class="month-tab ${state.libraryTagFilter===t?'active':''}" data-lib-tag-filter="${escapeHtml(t)}">#${escapeHtml(t)} · ${count}</span>
+  `).join("");
+  return `
+    ${statCards}
+    ${renderUpcomingPublishSection(items)}
+    <div class="card" style="padding:16px;margin-bottom:16px;">
+      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;${tagChips ? "margin-bottom:12px;" : ""}">
+        <input class="field" id="lib-search-input" style="flex:1;min-width:200px;" placeholder="제목으로 검색..." value="${escapeHtml(state.librarySearch||"")}" />
+        <div style="display:flex;gap:6px;">
+          <button class="btn ${state.libraryTypeFilter==='all'?'amber':'outline'}" data-lib-type-filter="all" style="font-size:12px;padding:6px 12px;">전체</button>
+          <button class="btn ${state.libraryTypeFilter==='column'?'amber':'outline'}" data-lib-type-filter="column" style="font-size:12px;padding:6px 12px;">칼럼</button>
+          <button class="btn ${state.libraryTypeFilter==='cardnews'?'amber':'outline'}" data-lib-type-filter="cardnews" style="font-size:12px;padding:6px 12px;">카드뉴스</button>
+        </div>
+        <button class="btn outline" id="lib-export-csv-btn" style="font-size:12px;padding:6px 12px;white-space:nowrap;">⬇️ CSV 내보내기</button>
+      </div>
+      ${tagChips ? `<div class="month-tabs" style="margin-bottom:0;">${tagChips}${state.libraryTagFilter ? `<span class="month-tab" data-lib-tag-filter="">✕ 태그 필터 해제</span>` : ""}</div>` : ""}
+    </div>
+    <div id="lib-results">${renderLibraryResultsInner()}</div>
+  `;
 }
 
 /* ---- 키워드 트렌드 / 이 달의 수요 예측 ---- */
@@ -3307,15 +3785,46 @@ function bindRouteEvents(){
     const modeSel = document.getElementById("col-input-mode");
     if(modeSel) modeSel.addEventListener("change", ()=>{ state.pipeline.inputMode = modeSel.value; render(); });
     const urlInput = document.getElementById("col-source-url");
-    if(urlInput) urlInput.addEventListener("input", ()=>{ state.pipeline.sourceUrl = urlInput.value; });
+    if(urlInput) urlInput.addEventListener("input", ()=>{ state.pipeline.sourceUrl = urlInput.value; saveColumnDraftToStorage(); });
     const textInput = document.getElementById("col-source-text");
-    if(textInput) textInput.addEventListener("input", ()=>{ state.pipeline.sourceText = textInput.value; });
+    if(textInput) textInput.addEventListener("input", ()=>{ state.pipeline.sourceText = textInput.value; saveColumnDraftToStorage(); });
     const runColBtn = document.getElementById("run-column-btn");
     if(runColBtn) runColBtn.addEventListener("click", runColumnGeneration);
     const resetBtn = document.getElementById("reset-pipeline-btn");
     if(resetBtn) resetBtn.addEventListener("click", resetPipeline);
     const reelsBtn = document.getElementById("run-reels-btn");
     if(reelsBtn) reelsBtn.addEventListener("click", runReelsGeneration);
+    const rcTitleInput = document.getElementById("rc-title-input");
+    if(rcTitleInput) rcTitleInput.addEventListener("input", ()=>{ state.pipeline.rewrittenColumn.title = rcTitleInput.value; saveColumnDraftToStorage(); });
+    const rcBodyTextarea = document.getElementById("rc-body-textarea");
+    if(rcBodyTextarea) rcBodyTextarea.addEventListener("input", ()=>{
+      state.pipeline.rewrittenColumn.body = rcBodyTextarea.value;
+      saveColumnDraftToStorage();
+      const rcCharcountEl = document.getElementById("rc-charcount");
+      if(rcCharcountEl) rcCharcountEl.textContent = formatCharCountNote(rcBodyTextarea.value);
+      const rcAdRiskEl = document.getElementById("rc-ad-risk-warning");
+      if(rcAdRiskEl) rcAdRiskEl.innerHTML = formatAdRiskWarning(rcBodyTextarea.value);
+    });
+    const copyColumnBtn = document.getElementById("copy-column-btn");
+    if(copyColumnBtn) copyColumnBtn.addEventListener("click", ()=>{
+      const c = state.pipeline.rewrittenColumn;
+      if(!c) return;
+      copyTextToClipboard((c.title||"")+"\n\n"+(c.body||""), copyColumnBtn);
+    });
+    const copyReelsBtn = document.getElementById("copy-reels-btn");
+    if(copyReelsBtn) copyReelsBtn.addEventListener("click", ()=>{
+      const r = state.pipeline.reelsScript;
+      if(!r) return;
+      copyTextToClipboard(reelsScriptToText(r), copyReelsBtn);
+    });
+    const uploadNotionBtn = document.getElementById("upload-notion-btn");
+    if(uploadNotionBtn) uploadNotionBtn.addEventListener("click", runNotionUpload);
+    const restoreDraftBtn = document.getElementById("restore-draft-btn");
+    if(restoreDraftBtn) restoreDraftBtn.addEventListener("click", restoreColumnDraft);
+    const dismissDraftBtn = document.getElementById("dismiss-draft-btn");
+    if(dismissDraftBtn) dismissDraftBtn.addEventListener("click", ()=>{ clearColumnDraftFromStorage(); render(); });
+    const colPublishDateInput = document.getElementById("col-publish-date-input");
+    if(colPublishDateInput) colPublishDateInput.addEventListener("input", ()=>{ state.pipeline.publishDateStr = colPublishDateInput.value; });
     const saveProjBtn = document.getElementById("save-project-btn");
     if(saveProjBtn) saveProjBtn.addEventListener("click", saveColumnProject);
     document.querySelectorAll("[data-load-project]").forEach(btn=>{
@@ -3397,6 +3906,8 @@ function bindRouteEvents(){
     if(runCardDraftBtn) runCardDraftBtn.addEventListener("click", runCardDraftGeneration);
     const resetCardBtn = document.getElementById("reset-cardpipeline-btn");
     if(resetCardBtn) resetCardBtn.addEventListener("click", resetCardPipeline);
+    const cardnewsPublishDateInput = document.getElementById("cardnews-publish-date-input");
+    if(cardnewsPublishDateInput) cardnewsPublishDateInput.addEventListener("input", ()=>{ state.cardPipeline.publishDateStr = cardnewsPublishDateInput.value; });
     const saveCardProjBtn = document.getElementById("save-cardnews-project-btn");
     if(saveCardProjBtn) saveCardProjBtn.addEventListener("click", saveCardNewsProject);
     document.querySelectorAll("[data-load-cardnews-project]").forEach(btn=>{
@@ -3977,7 +4488,36 @@ function bindRouteEvents(){
     });
     const downloadAllBtn = document.getElementById("download-all-cards-btn");
     if(downloadAllBtn) downloadAllBtn.addEventListener("click", downloadAllCardsZip);
+    const uploadCardNewsNotionBtn = document.getElementById("upload-cardnews-notion-btn");
+    if(uploadCardNewsNotionBtn) uploadCardNewsNotionBtn.addEventListener("click", runCardNewsNotionUpload);
+    const copyCardNewsBtn = document.getElementById("copy-cardnews-btn");
+    if(copyCardNewsBtn) copyCardNewsBtn.addEventListener("click", ()=>{
+      const cn = state.cardPipeline.cardNews;
+      if(!cn) return;
+      copyTextToClipboard(cardNewsSlidesToText(cn.slides), copyCardNewsBtn);
+    });
     applyDynamicFlowToVisibleCards();
+  }
+  if(state.route === "library"){
+    const libSearchInput = document.getElementById("lib-search-input");
+    if(libSearchInput) libSearchInput.addEventListener("input", ()=>{
+      state.librarySearch = libSearchInput.value;
+      const resultsEl = document.getElementById("lib-results");
+      if(resultsEl){ resultsEl.innerHTML = renderLibraryResultsInner(); bindLibraryResultButtons(); }
+    });
+    document.querySelectorAll("[data-lib-type-filter]").forEach(btn=>{
+      btn.addEventListener("click", ()=>{ state.libraryTypeFilter = btn.dataset.libTypeFilter; render(); });
+    });
+    document.querySelectorAll("[data-lib-tag-filter]").forEach(btn=>{
+      btn.addEventListener("click", ()=>{
+        const t = btn.dataset.libTagFilter;
+        state.libraryTagFilter = (t && t !== state.libraryTagFilter) ? t : null;
+        render();
+      });
+    });
+    const libExportCsvBtn = document.getElementById("lib-export-csv-btn");
+    if(libExportCsvBtn) libExportCsvBtn.addEventListener("click", downloadLibraryCsv);
+    bindLibraryResultButtons();
   }
   if(state.route === "keywords"){
     const runBtn = document.getElementById("run-analysis-btn");
