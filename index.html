@@ -1539,7 +1539,7 @@ function renderCardEditorModal(){
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
           <span style="font-size:11px;font-weight:700;opacity:0.7;">${layerTypeLabel(layer.type)}${isSelected?' · 선택됨':''}</span>
           ${layer.type === "subtext" && slide.autoFlowSubtext === false ? `<button class="btn outline" data-reset-autoflow="${idx}" style="font-size:10px;padding:2px 6px;">↩️ 자동 배치로</button>` : ""}
-          ${layer.type === "custom" ? `<button class="btn outline" data-delete-layer="${idx}:${layer.id}" style="font-size:10px;padding:2px 6px;border-color:var(--seal);color:var(--seal);">삭제</button>` : ""}
+          ${["custom","kicker","pagenum","footer-org","footer-phone"].includes(layer.type) ? `<button class="btn outline" data-delete-layer="${idx}:${layer.id}" style="font-size:10px;padding:2px 6px;border-color:var(--seal);color:var(--seal);">삭제</button>` : ""}
         </div>
         <textarea class="field" data-layer-text="${idx}:${layer.id}" style="width:100%;min-height:${layer.type==='headline'?44:52}px;font-size:12px;margin-bottom:6px;">${escapeHtml(layer.text)}</textarea>
         <div style="display:flex;align-items:center;gap:6px;font-size:11px;margin-bottom:6px;flex-wrap:wrap;">
@@ -1849,7 +1849,10 @@ function cardTheme(){
 }
 
 function layerTypeLabel(type){
-  return { headline:"헤드라인", subtext:"보조설명", custom:"추가 텍스트", image:"이미지" }[type] || "텍스트";
+  return {
+    headline:"헤드라인", subtext:"보조설명", custom:"추가 텍스트", image:"이미지",
+    kicker:"상단 라벨(킥커)", pagenum:"슬라이드 번호", "footer-org":"사무소명(하단)", "footer-phone":"전화번호(하단)",
+  }[type] || "텍스트";
 }
 
 /* 텍스트 레이어 종류별 "기준" 글자 크기(px, scale=1 기준). buildCardMarkup과 리사이즈 핸들 드래그 로직이 함께 사용 */
@@ -2003,6 +2006,28 @@ function resolveSlideTheme(idx, total){
 }
 
 /* 예전 저장된 프로젝트(레이어 없이 headline/subtext만 있던 형식)를 레이어 구조로 이관 */
+/* 상단 킥커 라벨·슬라이드 번호·하단 사무소명/연락처를 "레이어"로 만든다. 예전엔 이 넷이 브랜드 설정에서만
+   고정으로 그려지는 고정 요소라 슬라이드별로 따로 편집할 수 없었음 — 이제는 다른 레이어처럼 드래그·수정·삭제가
+   되면서, 동시에 "🎨 카드뉴스 설정 → 킥커·발행주체 일괄 수정"으로 전체 슬라이드에 한 번에 통일도 가능하다. */
+function makeChromeLayers(idx, total, brand){
+  const isCover = idx === 0;
+  const isCta = (idx != null && total != null) ? idx === total - 1 : false;
+  const kickerText = (brand && brand.kicker) ? brand.kicker : "가이드";
+  const org = (brand && brand.orgName) ? brand.orgName : "법률사무소 OOO";
+  const phone = (brand && brand.phone) ? brand.phone : "02-0000-0000";
+  const layers = [
+    { id:"kicker", type:"kicker", text: kickerText, x:50, y:7, scale:1, align:"left" },
+  ];
+  if(!isCover && !isCta){
+    layers.push({ id:"pagenum", type:"pagenum", text: String(idx).padStart(2,"0"), x:50, y:10, scale:1, align:"left" });
+  }
+  layers.push({ id:"footer-org", type:"footer-org", text: org.toUpperCase(), x:50, y:93, scale:1, align:"left" });
+  if(isCta){
+    layers.push({ id:"footer-phone", type:"footer-phone", text: phone, x:50, y:93, scale:1, align:"right" });
+  }
+  return layers;
+}
+
 function ensureSlideLayers(slide, idx, total){
   if(!slide.layers){
     const isCta = (idx!=null && total!=null) ? idx === total-1 : false;
@@ -2011,6 +2036,12 @@ function ensureSlideLayers(slide, idx, total){
       { id:"headline", type:"headline", text: slide.headline||"", x:50, y:30, scale: slide.headlineScale||1, align },
       { id:"subtext", type:"subtext", text: slide.subtext||"", x:50, y:58, scale: slide.subtextScale||1, align },
     ];
+  }
+  // 예전에 만들어진 슬라이드(킥커·페이지번호·푸터가 레이어가 아니라 고정 그림이던 시절)를 위한 이관:
+  // 없는 것만 채워 넣는다 — 이미 있으면(사용자가 지우기로 선택했을 수도 있음) 건드리지 않는다.
+  const hasAnyChrome = (slide.layers||[]).some(l=>l.id==="kicker"||l.id==="pagenum"||l.id==="footer-org"||l.id==="footer-phone");
+  if(!hasAnyChrome){
+    slide.layers.push(...makeChromeLayers(idx, total, state.brandSettings));
   }
   if(slide.highlight == null) slide.highlight = "";
   if(slide.autoFlowSubtext == null) slide.autoFlowSubtext = true;
@@ -2035,8 +2066,8 @@ function buildCardMarkup(slide, idx, total, brand, w, h, opts){
   const baseCustomSize = w * 0.036;
   const baseImageSize = w * 0.55;
   const footerSize = Math.round(w * 0.026);
-  const kickerText = (brand && brand.kicker) ? brand.kicker : "가이드";
-  const org = brand && brand.orgName ? brand.orgName : "법률사무소 OOO";
+  // 킥커·사무소명은 이제 각각 kicker/footer-org 레이어가 그리므로 여기선 안 씀. phone·tagline은
+  // CTA 박스(highlightHTML)에서 여전히 필요해서 남겨둠.
   const phone = brand && brand.phone ? brand.phone : "02-0000-0000";
   const tagline = brand && brand.tagline ? brand.tagline : "지금 상담 신청하세요";
 
@@ -2056,12 +2087,10 @@ function buildCardMarkup(slide, idx, total, brand, w, h, opts){
     <div style="position:absolute;inset:0;background:rgba(18,28,40,0.4);"></div>
   ` : "";
 
-  // 상단 킥커 라벨 + 얇은 가로선 (Header)
+  // 상단 가로선 (Header) — 킥커 텍스트 자체는 이제 "kicker" 레이어라서 여기선 장식용 선만 고정으로 그린다.
+  // (킥커 레이어가 자유롭게 움직일 수 있게 되면서, 선을 킥커 텍스트 너비에 맞춰 따라가게 하진 않기로 함)
   const topRow = `
-    <div style="position:absolute;left:${pad}px;right:${pad}px;top:${pad}px;display:flex;align-items:center;gap:${Math.round(w*0.025)}px;">
-      <div style="font-family:'Pretendard','Noto Sans KR',sans-serif;font-size:${footerSize}px;font-weight:700;color:${textColor};white-space:nowrap;word-break:keep-all;">${escapeHtml(kickerText)}</div>
-      <div style="flex:1;height:1px;background:${textColor};opacity:0.2;"></div>
-    </div>
+    <div style="position:absolute;left:${Math.round(w*0.4)}px;right:${pad}px;top:${Math.round(pad + footerSize*0.6)}px;height:1px;background:${textColor};opacity:0.2;"></div>
   `;
 
   // 강조 요소: 본문 슬라이드는 포인트색 좌측 바(Template B), 마지막 CTA 슬라이드는 흰색 박스 안에 다크 텍스트(Template K)
@@ -2099,29 +2128,14 @@ function buildCardMarkup(slide, idx, total, brand, w, h, opts){
     `;
   }
 
-  // 본문 슬라이드에는 스텝 번호(01, 02...)를 헤드라인 위에 고정으로 표시 (Template B/D)
-  let indexNumberHTML = "";
-  if(!isCover && !isCta){
-    const numLabel = String(idx).padStart(2,"0");
-    indexNumberHTML = `
-      <div style="position:absolute;left:${pad}px;top:${Math.round(h*0.083)}px;font-family:'Pretendard','Noto Sans KR',sans-serif;font-weight:900;font-size:${Math.round(w*0.042)}px;color:${accentColor};line-height:1;">${numLabel}</div>
-    `;
-  }
+  // 슬라이드 번호("01","02"...)는 이제 "pagenum" 레이어가 그린다 — 여기선 아무것도 안 그림.
+  const indexNumberHTML = "";
 
-  // 푸터: 본문 슬라이드는 사무소명 워드마크만, CTA 슬라이드는 구분선 + 사무소명 + 연락처 (Template K)
+  // 푸터의 사무소명·전화번호 텍스트도 이제 각각 "footer-org"/"footer-phone" 레이어가 그린다.
+  // 여기선 CTA 슬라이드의 장식용 구분선만 고정으로 그린다 (그 선 자체는 편집 대상이 아님).
   const footerHTML = isCta ? `
-    <div data-role="footer" style="position:absolute;left:${pad}px;right:${pad}px;bottom:${pad}px;">
-      <div style="height:1px;background:${textColor};opacity:0.2;margin-bottom:${Math.round(h*0.018)}px;"></div>
-      <div style="display:flex;justify-content:space-between;align-items:center;">
-        <div style="font-family:'Pretendard','Noto Sans KR',sans-serif;font-weight:800;font-size:${Math.round(footerSize*1.15)}px;letter-spacing:0.03em;color:${textColor};word-break:keep-all;">${escapeHtml(org).toUpperCase()}</div>
-        <div style="font-family:'Pretendard','IBM Plex Mono',monospace;font-weight:600;font-size:${footerSize}px;color:${textColor};opacity:0.75;">${escapeHtml(phone)}</div>
-      </div>
-    </div>
-  ` : `
-    <div data-role="footer" style="position:absolute;left:${pad}px;right:${pad}px;bottom:${pad}px;">
-      <div style="font-family:'Pretendard','Noto Sans KR',sans-serif;font-weight:800;font-size:${Math.round(footerSize*1.15)}px;letter-spacing:0.03em;color:${textColor};">${escapeHtml(org).toUpperCase()}</div>
-    </div>
-  `;
+    <div style="position:absolute;left:${pad}px;right:${pad}px;bottom:${Math.round(h*0.075)}px;height:1px;background:${textColor};opacity:0.2;"></div>
+  ` : "";
 
   const dragAttrs = interactive ? "cursor:move;touch-action:none;" : "pointer-events:none;";
   const layerAttr = (i, id) => interactive ? `data-layer="${i}:${id}"` : "";
@@ -2175,6 +2189,10 @@ function buildCardMarkup(slide, idx, total, brand, w, h, opts){
     let baseSize, fontFamily, fontWeight, opacity, lineHeight, defaultColor;
     if(layer.type === "headline"){ baseSize = baseHeadlineSize; fontFamily = "'Pretendard','Noto Sans KR',sans-serif"; fontWeight = 800; opacity = 1; lineHeight = 1.22; defaultColor = textColor; }
     else if(layer.type === "subtext"){ baseSize = baseSubtextSize; fontFamily = "'Pretendard','Noto Sans KR',sans-serif"; fontWeight = 500; opacity = 1; lineHeight = 1.5; defaultColor = secondaryTextColor; }
+    else if(layer.type === "kicker"){ baseSize = footerSize; fontFamily = "'Pretendard','Noto Sans KR',sans-serif"; fontWeight = 700; opacity = 1; lineHeight = 1.2; defaultColor = textColor; }
+    else if(layer.type === "pagenum"){ baseSize = w*0.042; fontFamily = "'Pretendard','Noto Sans KR',sans-serif"; fontWeight = 900; opacity = 1; lineHeight = 1; defaultColor = accentColor; }
+    else if(layer.type === "footer-org"){ baseSize = footerSize*1.15; fontFamily = "'Pretendard','Noto Sans KR',sans-serif"; fontWeight = 800; opacity = 1; lineHeight = 1.2; defaultColor = textColor; }
+    else if(layer.type === "footer-phone"){ baseSize = footerSize; fontFamily = "'Pretendard','IBM Plex Mono',monospace"; fontWeight = 600; opacity = 0.75; lineHeight = 1.2; defaultColor = textColor; }
     else { baseSize = baseCustomSize; fontFamily = "'Pretendard','Noto Sans KR',sans-serif"; fontWeight = 600; opacity = 1; lineHeight = 1.35; defaultColor = textColor; }
     if(layer.fontFamily) fontFamily = layer.fontFamily;
     if(layer.bold != null) fontWeight = layer.bold ? 800 : 400;
@@ -2798,6 +2816,7 @@ TABLE: 항목1=값1 | 항목2=값2 (이미지/차트 자리 슬라이드에서 �
     const layers = [
       { id:"headline", type:"headline", text: headline, x:50, y: layout.headlineY, scale:1, align },
       { id:"subtext", type:"subtext", text: subtext, x:50, y: layout.subtextY, scale:1, align },
+      ...makeChromeLayers(idx, count, state.brandSettings),
     ];
     // "이미지/차트 자리가 필요한 슬라이드"인데 아직 이미지가 없으면: 실제 데이터로 뽑아낸 표가 있으면 표를 자동으로 넣고,
     // 없으면 사진을 나중에 채워 넣을 자리(점선 박스)를 시각적으로 남겨서 체크 여부가 카드에 실제로 드러나게 한다.
@@ -2834,6 +2853,7 @@ TABLE: 항목1=값1 | 항목2=값2 (이미지/차트 자리 슬라이드에서 �
       layers: [
         { id:"headline", type:"headline", text:"", x:50, y: layout.headlineY, scale:1, align },
         { id:"subtext", type:"subtext", text:"", x:50, y: layout.subtextY, scale:1, align },
+        ...makeChromeLayers(idx, count, state.brandSettings),
       ],
     });
   }
@@ -3959,6 +3979,19 @@ function bindRouteEvents(){
         tagline: taglineEl ? taglineEl.value.trim() : (state.brandSettings.tagline||""),
       };
       await saveBrandSettings();
+      // 지금 화면에 보이는 카드뉴스의 킥커·사무소명·전화번호 레이어도 전부 새 값으로 덮어써서
+      // "전역으로 통일"이 실제로 눈에 보이게 반영되게 한다 (개별 슬라이드에서 따로 고친 것도 이 버튼을 누르면 초기화됨).
+      const cn = state.cardPipeline.cardNews;
+      if(cn){
+        const b = state.brandSettings;
+        cn.slides.forEach(slide=>{
+          (slide.layers||[]).forEach(layer=>{
+            if(layer.type === "kicker") layer.text = b.kicker || "가이드";
+            else if(layer.type === "footer-org") layer.text = (b.orgName || "법률사무소 OOO").toUpperCase();
+            else if(layer.type === "footer-phone") layer.text = b.phone || "02-0000-0000";
+          });
+        });
+      }
       render();
       const banner = document.getElementById("bulk-brand-saved-banner");
       if(banner){ banner.style.display = "inline-block"; setTimeout(()=>{ banner.style.display="none"; }, 1800); }
