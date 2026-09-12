@@ -4,6 +4,16 @@
 
 이 문서는 2026-09-10에 실제 생성된 카드 4장(표지·본문 2종·CTA)을 리뷰하고 발견된 문제를 고친 뒤 작성됐습니다.
 
+## 누끼 따기 / 배경 제거 (2026-09-12 추가)
+
+카드 편집 모달에서 이미지 레이어를 넣으면 "🪄 배경 제거(누끼)" 버튼이 뜬다(차트 이미지 레이어는 제외). 서버 비용이나 이미지 유출 없이 **브라우저 안에서만** 처리하도록 `@imgly/background-removal`(오픈소스, 무료)을 CDN에서 동적으로 불러와 씀 — 별도 API 키나 서버 코드가 필요 없음.
+
+- **`removeImageLayerBackground(idx, layerId)`**: 버튼을 눌렀을 때만 `import("https://cdn.jsdelivr.net/npm/@imgly/background-removal@.../dist/index.mjs")`로 동적 로드(평소 페이지 로딩을 무겁게 만들지 않기 위함). 처리 전 원본을 `layer.srcBeforeCutout`에 백업해두고, 결과(투명 배경 PNG)로 `layer.src`를 덮어씀. `state.cardEditor.bgRemoval = {layerId, message}`로 처리 중 상태를 표시하고, 끝나면 `null`로 되돌림.
+- **`revertImageLayerCutout(idx, layerId)`**: `srcBeforeCutout`이 있으면 "↩️ 원본으로 되돌리기" 버튼이 뜨고, 누르면 원본으로 복원.
+- **import map 필수**: `@imgly/background-removal`은 내부적으로 `import("onnxruntime-web")`을 실행 시점에 동적으로 호출하는데, 이건 npm 패키지 이름(bare specifier)이라 브라우저가 번들러 없이는 못 찾음. 그래서 `<head>`에 `<script type="importmap">`으로 `onnxruntime-web` → `https://cdn.jsdelivr.net/npm/onnxruntime-web@1.21.0/dist/ort.bundle.min.mjs`를 매핑해둠. **이 importmap을 지우거나 순서를 다른 모듈 스크립트 뒤로 옮기면 배경 제거가 바로 깨짐** — import map은 문서 안에서 처음 모듈이 로드되기 전에 등록돼야 브라우저가 인식하므로, 반드시 `<head>` 맨 위쪽, 다른 `<script>`보다 먼저 있어야 함.
+- 모델은 가장 작은 `isnet_quint8`(~40MB)를 씀 — 다운로드 부담을 줄이는 대신 화질이 최상급 모델보다 살짝 떨어질 수 있음. 최초 1회만 느리고(수십 초~1분), 이후엔 브라우저 캐시에 남아서 빨라짐(이미지마다 매번 다시 받지 않음).
+- 사람이든 사물이든 문서든 범용으로 인식하는 salient-object 모델(isnet)이라 "제품 사진 배경 지우기"나 "인물 사진 배경 지우기" 둘 다 어느 정도 동작함 — 다만 배경과 전경 경계가 애매한 사진(예: 배경과 색이 비슷한 물체)은 결과가 깔끔하지 않을 수 있음.
+
 ## 이미지 보관함 (2026-09-12 추가)
 
 카드 편집 모달의 "🔎 이미지 검색해서 넣기"/"🔎 이미지 검색해서 배경으로" 패널 안에 [검색]/[📁 보관함] 탭을 추가해서, 자주 쓰는 이미지를 저장해두고 다시 꺼내 쓸 수 있게 했음.

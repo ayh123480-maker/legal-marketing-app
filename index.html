@@ -6,6 +6,12 @@
 <title>마케팅 성과 도구</title>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.css">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Serif+KR:wght@600;700&family=Noto+Sans+KR:wght@400;500;700;800;900&family=IBM+Plex+Mono:wght@500;600&family=Gowun+Dodum&family=Black+Han+Sans&family=Nanum+Myeongjo:wght@400;700&family=Jua&display=swap">
+<script type="importmap">
+{ "imports": {
+    "onnxruntime-web": "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.21.0/dist/ort.bundle.min.mjs",
+    "onnxruntime-web/webgpu": "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.21.0/dist/ort.webgpu.bundle.min.mjs"
+} }
+</script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.5.1/chart.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
@@ -1534,6 +1540,8 @@ function renderCardEditorModal(){
       const isPlaceholder = !layer.src;
       const isNewStyle = layer.wFrac != null && layer.hFrac != null;
       const imgLabel = isPlaceholder ? "🖼️ 이미지 자리 (비어있음)" : (layer.isChart ? "📊 차트/그래프" : "🖼️ 이미지");
+      const bgr = ed.bgRemoval;
+      const isCutoutBusy = bgr && bgr.layerId === layer.id;
       return `
         <div style="${rowBorder}border-radius:8px;padding:8px;margin-bottom:8px;">
           <div style="display:flex;align-items:center;gap:8px;">
@@ -1555,6 +1563,14 @@ function renderCardEditorModal(){
                   <button class="btn outline" data-layer-font-adjust="${idx}:${layer.id}:1" style="padding:2px 8px;font-size:12px;">+</button>
                 </div>`)
           }
+          ${(!isPlaceholder && !layer.isChart) ? `
+            <div style="display:flex;align-items:center;gap:6px;font-size:11px;margin-top:6px;flex-wrap:wrap;">
+              <button class="btn outline" data-remove-bg-cutout="${idx}:${layer.id}" ${isCutoutBusy?"disabled":""} style="font-size:10px;padding:3px 8px;">🪄 배경 제거(누끼)</button>
+              ${layer.srcBeforeCutout ? `<button class="btn outline" data-revert-bg-cutout="${idx}:${layer.id}" style="font-size:10px;padding:3px 8px;">↩️ 원본으로 되돌리기</button>` : ""}
+              ${isCutoutBusy ? `<span style="font-size:10px;opacity:0.6;">${escapeHtml(bgr.message||"처리 중...")}</span>` : ""}
+            </div>
+            ${isCutoutBusy ? `<div style="font-size:10px;opacity:0.5;margin-top:4px;">처음 한 번은 인식 모델을 내려받느라 시간이 좀 걸려요(수십 초~1분). 이후엔 브라우저에 저장돼서 훨씬 빨라져요.</div>` : ""}
+          ` : ""}
         </div>
       `;
     }
@@ -2432,6 +2448,54 @@ async function tryConvertToDataURL(url){
   }catch(e){
     return url; // CORS 등으로 실패하면 원본 URL을 그대로 사용 (미리보기는 되지만 PNG 다운로드 시 문제가 될 수 있음)
   }
+}
+
+/* 누끼 따기(배경 제거): @imgly/background-removal을 브라우저 안에서만 돌려서
+   서버 비용/이미지 유출 없이 처리한다. 첫 실행 때만 인식 모델(수십MB)을 받고,
+   그 다음부턴 브라우저 캐시에 남아서 빨라진다. 스크립트 태그로 미리 불러오지 않고
+   실제로 눌렀을 때만 동적 import 하도록 해서 평소 페이지 로딩을 무겁게 만들지 않는다. */
+const BG_REMOVAL_CDN_URL = "https://cdn.jsdelivr.net/npm/@imgly/background-removal@1.7.0/dist/index.mjs";
+let _bgRemovalModulePromise = null;
+function loadBgRemovalModule(){
+  if(!_bgRemovalModulePromise) _bgRemovalModulePromise = import(BG_REMOVAL_CDN_URL);
+  return _bgRemovalModulePromise;
+}
+
+async function removeImageLayerBackground(idx, layerId){
+  const ed = state.cardEditor;
+  if(!ed || ed.bgRemoval) return; // 이미 처리 중이면 중복 실행 방지
+  const slide = state.cardPipeline.cardNews && state.cardPipeline.cardNews.slides[idx];
+  const layer = slide && (slide.layers||[]).find(l=>l.id===layerId);
+  if(!layer || !layer.src) return;
+  ed.bgRemoval = { layerId, message: "모델 준비 중..." };
+  render();
+  try{
+    const mod = await loadBgRemovalModule();
+    const sourceBlob = await fetch(layer.src).then(r=>r.blob());
+    const resultBlob = await mod.removeBackground(sourceBlob, {
+      model: "isnet_quint8", // 가장 작은 모델(~40MB) — 다운로드 부담을 줄이는 쪽을 우선
+      progress: (key, current, total)=>{
+        if(ed.bgRemoval) ed.bgRemoval.message = "처리 중... (" + key + ")";
+        render();
+      },
+    });
+    const resultDataUrl = await readFileAsDataURL(resultBlob);
+    if(!layer.srcBeforeCutout) layer.srcBeforeCutout = layer.src;
+    layer.src = resultDataUrl;
+  }catch(e){
+    alert("배경 제거에 실패했어요: " + e.message);
+  }
+  ed.bgRemoval = null;
+  render();
+}
+
+function revertImageLayerCutout(idx, layerId){
+  const slide = state.cardPipeline.cardNews && state.cardPipeline.cardNews.slides[idx];
+  const layer = slide && (slide.layers||[]).find(l=>l.id===layerId);
+  if(!layer || !layer.srcBeforeCutout) return;
+  layer.src = layer.srcBeforeCutout;
+  layer.srcBeforeCutout = null;
+  render();
 }
 
 async function runCardImageSearch(){
@@ -4356,7 +4420,7 @@ function bindRouteEvents(){
     });
     document.querySelectorAll("[data-open-card-editor]").forEach(el=>{
       el.addEventListener("click", ()=>{
-        state.cardEditor = { slideIdx: Number(el.dataset.openCardEditor), selectedLayer:null, editingLayer:null, imageSearch:null, chartBuilder:null };
+        state.cardEditor = { slideIdx: Number(el.dataset.openCardEditor), selectedLayer:null, editingLayer:null, imageSearch:null, chartBuilder:null, bgRemoval:null };
         render();
       });
     });
@@ -4385,6 +4449,18 @@ function bindRouteEvents(){
           if(state.cardEditor) state.cardEditor.selectedLayer = newLayer.id;
           render();
         }catch(e){ alert("이미지를 불러오지 못했어요: " + e.message); }
+      });
+    });
+    document.querySelectorAll("[data-remove-bg-cutout]").forEach(btn=>{
+      btn.addEventListener("click", ()=>{
+        const [idxStr, layerId] = btn.dataset.removeBgCutout.split(":");
+        removeImageLayerBackground(Number(idxStr), layerId);
+      });
+    });
+    document.querySelectorAll("[data-revert-bg-cutout]").forEach(btn=>{
+      btn.addEventListener("click", ()=>{
+        const [idxStr, layerId] = btn.dataset.revertBgCutout.split(":");
+        revertImageLayerCutout(Number(idxStr), layerId);
       });
     });
     document.querySelectorAll("[data-set-bg-image]").forEach(input=>{
