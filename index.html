@@ -310,6 +310,7 @@ const state = {
   cardNewsTemplates: [], // [{id, name, cardNewsPrompt, cardColorPresets, brandSettings, slideCount, createdAt}] — 카드뉴스 전용 템플릿
   cardDefaultBgImage: null,   // 카드뉴스를 새로 만들 때 모든 슬라이드에 기본으로 깔리는 배경 이미지 (data URL)
   cardDefaultBgOpacity: 100,  // 위 기본 배경 이미지의 기본 투명도 (0~100)
+  imageLibrary: [],      // [{id, dataUrl, name, addedAt}] — 자주 쓰는 이미지 보관함 (검색해서 저장했든, 직접 업로드했든 여기 모아둠)
   columnsSettingsOpen: false,  // 칼럼 페이지 내 글쓰기 스타일 설정 패널 펼침 여부 (저장 안 함, 세션 한정)
   cardSettingsOpen: false,     // 카드뉴스 페이지 내 카드뉴스 설정 패널 펼침 여부 (저장 안 함, 세션 한정)
   cardBulkEditOpen: false,     // 완성된 카드뉴스 화면의 "킥커·발행주체 일괄 수정" 패널 펼침 여부 (세션 한정)
@@ -428,6 +429,10 @@ async function loadState(){
       state.cardDefaultBgOpacity = parsed.opacity != null ? parsed.opacity : 100;
     }
   }catch(e){}
+  try{
+    const il = await window.storage.get("mkt:imageLibrary", false);
+    if(il && il.value) state.imageLibrary = JSON.parse(il.value);
+  }catch(e){}
   state.loaded = true;
   render();
 }
@@ -447,6 +452,50 @@ async function saveStyleTemplates(){ await window.storage.set("mkt:styleTemplate
 async function saveCardNewsPrompt(){ await window.storage.set("mkt:cardNewsPrompt", JSON.stringify(state.cardNewsPrompt), false); }
 async function saveCardNewsTemplates(){ await window.storage.set("mkt:cardNewsTemplates", JSON.stringify(state.cardNewsTemplates), false); }
 async function saveCardDefaultBg(){ await window.storage.set("mkt:cardDefaultBg", JSON.stringify({ image: state.cardDefaultBgImage, opacity: state.cardDefaultBgOpacity }), false); }
+async function saveImageLibrary(){ await window.storage.set("mkt:imageLibrary", JSON.stringify(state.imageLibrary), false); }
+
+/* 보관함에 넣을 이미지는 용량 절약을 위해 긴 변 기준 960px로 줄이고 JPEG로 압축한다.
+   실제로 카드에 넣는 원본 이미지(makeImageLayer 등)는 손대지 않고, 보관함 저장본만 줄인다. */
+function downscaleImageForLibrary(dataUrl, maxDim, quality){
+  return new Promise((resolve)=>{
+    const img = new Image();
+    img.onload = ()=>{
+      try{
+        const scale = Math.min(1, maxDim / Math.max(img.naturalWidth, img.naturalHeight));
+        const w = Math.max(1, Math.round(img.naturalWidth * scale));
+        const h = Math.max(1, Math.round(img.naturalHeight * scale));
+        const canvas = document.createElement("canvas");
+        canvas.width = w; canvas.height = h;
+        const ctx = canvas.getContext("2d");
+        ctx.drawImage(img, 0, 0, w, h);
+        resolve(canvas.toDataURL("image/jpeg", quality));
+      }catch(e){ resolve(dataUrl); }
+    };
+    img.onerror = ()=> resolve(dataUrl);
+    img.src = dataUrl;
+  });
+}
+
+const IMAGE_LIBRARY_MAX_ITEMS = 40;
+
+async function addToImageLibrary(dataUrl, name){
+  const thumb = await downscaleImageForLibrary(dataUrl, 960, 0.82);
+  state.imageLibrary.unshift({
+    id: "lib-"+Date.now()+"-"+Math.random().toString(36).slice(2,6),
+    dataUrl: thumb,
+    name: name || "이미지",
+    addedAt: Date.now(),
+  });
+  if(state.imageLibrary.length > IMAGE_LIBRARY_MAX_ITEMS){
+    state.imageLibrary = state.imageLibrary.slice(0, IMAGE_LIBRARY_MAX_ITEMS);
+  }
+  await saveImageLibrary();
+}
+
+function removeFromImageLibrary(id){
+  state.imageLibrary = state.imageLibrary.filter(item=>item.id !== id);
+  saveImageLibrary();
+}
 
 /* ---- 글쓰기 스타일 (상단 패널) : 문체 가이드만 다룬다 ---- */
 function collectWritingStyleFromForm(){
@@ -1565,26 +1614,53 @@ function renderCardEditorModal(){
   const textColorValue = co.text || theme.text;
   const is = ed.imageSearch;
 
+  const imageSearchTab = is ? (is.tab || "search") : "search";
   const imageSearchPanel = (is && is.open) ? `
     <div style="border:1px solid var(--line);border-radius:8px;padding:10px;margin-bottom:14px;">
-      <div style="font-size:11px;font-weight:700;margin-bottom:6px;">이미지 검색 (${is.purpose==='bg' ? '배경으로 넣기' : '이미지로 삽입'})</div>
-      <div style="display:flex;gap:6px;margin-bottom:8px;">
-        <input class="field" id="image-search-input" style="flex:1;font-size:12px;" placeholder="예: 법원, 계약서, 상담, 도시 야경..." value="${escapeHtml(is.query||"")}" />
-        <button class="btn amber" id="image-search-run-btn" style="font-size:11px;padding:6px 10px;">검색</button>
-        <button class="btn outline" id="image-search-close-btn" style="font-size:11px;padding:6px 10px;">닫기</button>
-      </div>
-      ${is.loading ? `<div style="font-size:12px;opacity:0.6;margin-bottom:6px;">검색 중...</div>` : ""}
-      ${is.error ? `<div style="font-size:12px;color:var(--seal);margin-bottom:6px;">${escapeHtml(is.error)}</div>` : ""}
-      ${(is.results && is.results.length) ? `
-        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;max-height:220px;overflow:auto;">
-          ${is.results.map((r,ri)=>`
-            <div data-image-search-pick="${ri}" style="cursor:pointer;border-radius:6px;overflow:hidden;border:1px solid var(--line);aspect-ratio:1;background:#f2f1ec;">
-              <img src="${r.thumb}" style="width:100%;height:100%;object-fit:cover;display:block;" />
-            </div>
-          `).join("")}
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
+        <div style="display:flex;gap:4px;">
+          <button class="btn ${imageSearchTab==='search'?'amber':'outline'}" data-image-panel-tab="search" style="font-size:11px;padding:5px 10px;">🔎 검색</button>
+          <button class="btn ${imageSearchTab==='library'?'amber':'outline'}" data-image-panel-tab="library" style="font-size:11px;padding:5px 10px;">📁 보관함 (${state.imageLibrary.length})</button>
         </div>
-        <div style="font-size:10px;opacity:0.45;margin-top:6px;">출처: Openverse (자유이용 라이선스 이미지 검색) — 상업적으로 쓸 땐 이미지별 라이선스·출처 표기 조건을 확인하세요.</div>
-      ` : (!is.loading ? `<div style="font-size:11px;opacity:0.5;">검색어를 입력하고 검색 버튼을 눌러보세요.</div>` : "")}
+        <button class="btn outline" id="image-search-close-btn" style="font-size:11px;padding:5px 10px;">닫기</button>
+      </div>
+      ${imageSearchTab === "search" ? `
+        <div style="display:flex;gap:6px;margin-bottom:8px;">
+          <input class="field" id="image-search-input" style="flex:1;font-size:12px;" placeholder="예: 법원, 계약서, 상담, 도시 야경..." value="${escapeHtml(is.query||"")}" />
+          <button class="btn amber" id="image-search-run-btn" style="font-size:11px;padding:6px 10px;">검색</button>
+        </div>
+        ${is.loading ? `<div style="font-size:12px;opacity:0.6;margin-bottom:6px;">검색 중...</div>` : ""}
+        ${is.error ? `<div style="font-size:12px;color:var(--seal);margin-bottom:6px;">${escapeHtml(is.error)}</div>` : ""}
+        ${(is.results && is.results.length) ? `
+          <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;max-height:220px;overflow:auto;">
+            ${is.results.map((r,ri)=>`
+              <div data-image-search-pick="${ri}" style="cursor:pointer;border-radius:6px;overflow:hidden;border:1px solid var(--line);aspect-ratio:1;background:#f2f1ec;position:relative;">
+                <img src="${r.thumb}" style="width:100%;height:100%;object-fit:cover;display:block;" />
+                <button data-image-search-save="${ri}" title="보관함에 저장" style="position:absolute;top:3px;right:3px;width:22px;height:22px;border-radius:5px;border:none;background:rgba(0,0,0,0.55);color:#fff;font-size:12px;cursor:pointer;display:flex;align-items:center;justify-content:center;">💾</button>
+              </div>
+            `).join("")}
+          </div>
+          <div style="font-size:10px;opacity:0.45;margin-top:6px;">출처: Openverse (자유이용 라이선스 이미지 검색) — 상업적으로 쓸 땐 이미지별 라이선스·출처 표기 조건을 확인하세요. 자주 쓸 이미지는 💾을 눌러 보관함에 저장해두세요.</div>
+        ` : (!is.loading ? `<div style="font-size:11px;opacity:0.5;">검색어를 입력하고 검색 버튼을 눌러보세요.</div>` : "")}
+      ` : `
+        <div style="margin-bottom:8px;">
+          <label class="btn outline" style="font-size:11px;padding:5px 10px;cursor:pointer;">
+            + 내 이미지 업로드해서 보관함에 추가
+            <input type="file" accept="image/*" id="image-library-upload-input" style="display:none;" />
+          </label>
+        </div>
+        ${state.imageLibrary.length ? `
+          <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;max-height:220px;overflow:auto;">
+            ${state.imageLibrary.map(item=>`
+              <div data-image-library-pick="${item.id}" style="cursor:pointer;border-radius:6px;overflow:hidden;border:1px solid var(--line);aspect-ratio:1;background:#f2f1ec;position:relative;">
+                <img src="${item.dataUrl}" style="width:100%;height:100%;object-fit:cover;display:block;" />
+                <button data-image-library-remove="${item.id}" title="보관함에서 삭제" style="position:absolute;top:3px;right:3px;width:22px;height:22px;border-radius:5px;border:none;background:rgba(0,0,0,0.55);color:#fff;font-size:12px;cursor:pointer;display:flex;align-items:center;justify-content:center;">✕</button>
+              </div>
+            `).join("")}
+          </div>
+          <div style="font-size:10px;opacity:0.45;margin-top:6px;">이미지를 누르면 바로 삽입돼요. 검색 결과에서 💾로 저장했거나, 직접 업로드한 이미지가 여기 모여요.</div>
+        ` : `<div style="font-size:11px;opacity:0.5;">아직 보관함이 비어있어요. 검색 결과에서 💾를 누르거나, 위에서 이미지를 업로드해보세요.</div>`}
+      `}
     </div>
   ` : "";
 
@@ -4421,7 +4497,7 @@ function bindRouteEvents(){
       btn.addEventListener("click", ()=>{
         if(!state.cardEditor) return;
         const purpose = btn.dataset.openImageSearch;
-        state.cardEditor.imageSearch = { open:true, purpose, query:"", loading:false, results:[], error:"" };
+        state.cardEditor.imageSearch = { open:true, purpose, tab:"search", query:"", loading:false, results:[], error:"" };
         render();
       });
     });
@@ -4430,6 +4506,14 @@ function bindRouteEvents(){
       if(state.cardEditor) state.cardEditor.imageSearch = null;
       render();
     });
+    document.querySelectorAll("[data-image-panel-tab]").forEach(btn=>{
+      btn.addEventListener("click", ()=>{
+        const is = state.cardEditor && state.cardEditor.imageSearch;
+        if(!is) return;
+        is.tab = btn.dataset.imagePanelTab;
+        render();
+      });
+    });
     const imageSearchRunBtn = document.getElementById("image-search-run-btn");
     const imageSearchInput = document.getElementById("image-search-input");
     if(imageSearchRunBtn) imageSearchRunBtn.addEventListener("click", runCardImageSearch);
@@ -4437,6 +4521,66 @@ function bindRouteEvents(){
     document.querySelectorAll("[data-image-search-pick]").forEach(el=>{
       el.addEventListener("click", ()=> applyCardImageSearchPick(Number(el.dataset.imageSearchPick)));
     });
+    document.querySelectorAll("[data-image-search-save]").forEach(btn=>{
+      btn.addEventListener("click", async (e)=>{
+        e.stopPropagation();
+        const is = state.cardEditor && state.cardEditor.imageSearch;
+        if(!is || !is.results) return;
+        const picked = is.results[Number(btn.dataset.imageSearchSave)];
+        if(!picked) return;
+        btn.textContent = "⏳";
+        try{
+          const src = await tryConvertToDataURL(picked.full);
+          await addToImageLibrary(src, picked.title || "검색 이미지");
+          render();
+        }catch(e){ alert("보관함에 저장하지 못했어요: " + e.message); render(); }
+      });
+    });
+    document.querySelectorAll("[data-image-library-pick]").forEach(el=>{
+      el.addEventListener("click", async ()=>{
+        const ed = state.cardEditor;
+        const is = ed && ed.imageSearch;
+        if(!is) return;
+        const item = state.imageLibrary.find(i=>i.id === el.dataset.imageLibraryPick);
+        if(!item) return;
+        const idx = ed.slideIdx;
+        const slide = state.cardPipeline.cardNews && state.cardPipeline.cardNews.slides[idx];
+        if(!slide) return;
+        const purpose = is.purpose;
+        ed.imageSearch = null;
+        render();
+        if(purpose === "bg"){
+          slide.bgImage = item.dataUrl;
+        } else {
+          const dims = await loadImageDims(item.dataUrl).catch(()=>({naturalWidth:1,naturalHeight:1.25}));
+          const newLayer = makeImageLayer(item.dataUrl, dims.naturalWidth, dims.naturalHeight);
+          if(!slide.layers) slide.layers = [];
+          slide.layers.push(newLayer);
+          ed.selectedLayer = newLayer.id;
+        }
+        render();
+      });
+    });
+    document.querySelectorAll("[data-image-library-remove]").forEach(btn=>{
+      btn.addEventListener("click", (e)=>{
+        e.stopPropagation();
+        if(!confirm("보관함에서 이 이미지를 삭제할까요?")) return;
+        removeFromImageLibrary(btn.dataset.imageLibraryRemove);
+        render();
+      });
+    });
+    const imageLibraryUploadInput = document.getElementById("image-library-upload-input");
+    if(imageLibraryUploadInput){
+      imageLibraryUploadInput.addEventListener("change", async ()=>{
+        const file = imageLibraryUploadInput.files && imageLibraryUploadInput.files[0];
+        if(!file) return;
+        try{
+          const dataUrl = await readFileAsDataURL(file);
+          await addToImageLibrary(dataUrl, file.name);
+          render();
+        }catch(e){ alert("이미지를 불러오지 못했어요: " + e.message); }
+      });
+    }
     document.querySelectorAll("[data-open-chart-builder]").forEach(btn=>{
       btn.addEventListener("click", ()=>{
         if(!state.cardEditor) return;
