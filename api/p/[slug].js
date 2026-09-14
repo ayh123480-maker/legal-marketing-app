@@ -21,7 +21,7 @@ module.exports = async (req, res) => {
       res.status(404).send(renderNotFoundPage());
       return;
     }
-    res.status(200).send(renderColumnPage(record));
+    res.status(200).send(renderColumnPage(record, { slug }));
   } catch (e) {
     res.status(500).send("페이지를 불러오지 못했어요: " + e.message);
   }
