@@ -4,7 +4,9 @@ const { parseBody } = require("../lib/parseBody");
 /**
  * 프론트엔드는 프롬프트만 보내고, 실제 Anthropic API 키는
  * 이 서버 함수(Vercel 환경변수 ANTHROPIC_API_KEY) 안에만 존재합니다.
- * body: { prompt: string, useWebSearch?: boolean, maxTokens?: number }
+ * body: { prompt: string, useWebSearch?: boolean, maxTokens?: number, images?: {mediaType, data}[] }
+ *   - images는 base64 데이터(순수 base64, "data:...;base64," 접두어 제외)만 담아서 보냄 —
+ *     레퍼런스 디자인 이미지를 분석시킬 때처럼 비전이 필요한 요청에서만 사용.
  * 응답: { text: string }  (모델이 낸 텍스트 블록을 이어붙인 것)
  */
 module.exports = async (req, res) => {
@@ -22,16 +24,31 @@ module.exports = async (req, res) => {
   }
 
   const body = await parseBody(req);
-  const { prompt, useWebSearch, maxTokens } = body || {};
+  const { prompt, useWebSearch, maxTokens, images } = body || {};
   if (!prompt) {
     res.status(400).json({ error: "prompt가 필요해요." });
     return;
   }
+  if (images && images.length > 4) {
+    res.status(400).json({ error: "이미지는 한 번에 4장까지만 보낼 수 있어요." });
+    return;
+  }
+
+  const content =
+    images && images.length
+      ? [
+          ...images.map((img) => ({
+            type: "image",
+            source: { type: "base64", media_type: img.mediaType, data: img.data },
+          })),
+          { type: "text", text: prompt },
+        ]
+      : prompt;
 
   const payload = {
     model: "claude-sonnet-4-6",
     max_tokens: maxTokens || 2000,
-    messages: [{ role: "user", content: prompt }],
+    messages: [{ role: "user", content }],
   };
   if (useWebSearch) {
     payload.tools = [{ type: "web_search_20250305", name: "web_search" }];

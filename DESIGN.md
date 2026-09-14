@@ -4,6 +4,20 @@
 
 이 문서는 2026-09-10에 실제 생성된 카드 4장(표지·본문 2종·CTA)을 리뷰하고 발견된 문제를 고친 뒤 작성됐습니다.
 
+## 레퍼런스 디자인으로 학습 (2026-09-14 추가)
+
+"카드뉴스 설정" 패널 맨 위에 참고 이미지를 올리면 AI가 색상·분위기를 분석해서 색상 프리셋과 스타일 프롬프트를 자동으로 채워주는 기능. **실제 모델을 파인튜닝/재학습시키는 게 아님** — Claude Vision에게 이미지를 보여주고 관찰한 걸 구조화된 JSON으로 받아서 기존 설정 필드에 대입하는 방식.
+
+- `analyzeDesignReference()`가 참고 이미지(최대 3장, `downscaleImageForLibrary`로 압축)를 `callBackendAI(prompt, false, 900, images)`에 넘기고, `extractJSONBlock()`으로 `{coverBg, coverText, contentBg, contentText, ctaBg, ctaText, accent, styleNote}` 형태의 응답을 파싱함.
+- 색상은 `state.cardColorPresets`에, `styleNote`는 `state.cardNewsPrompt` 앞에 `[레퍼런스 디자인 분석]` 표시를 붙여 이어붙임(기존에 써둔 프롬프트를 지우지 않음).
+- **새 저장소를 안 만들고 기존 템플릿 시스템에 얹은 구조** — 분석 후에는 그냥 기존 "현재 설정을 템플릿으로 저장" 버튼으로 이어서 템플릿화하면 됨. 색상/프롬프트가 이미 폼에 반영된 상태라 그 버튼이 그대로 동작함.
+- **백엔드(`api/ai.js`)에 비전 지원 추가**: body에 `images: [{mediaType, data}]`(순수 base64, data URL 접두어 제외)를 실으면 Anthropic 메시지의 `content`를 배열로 바꿔서 이미지 블록 + 텍스트 블록으로 구성함. 이미지 없는 기존 호출(텍스트만)은 그대로 문자열 content를 씀 — 기존 호출부는 전혀 안 건드림. 이미지는 요청당 최대 4장으로 서버에서 제한.
+- 클라이언트의 `dataUrlToVisionImage(dataUrl)`가 `data:image/jpeg;base64,...` 형식을 `{mediaType, data}`로 분해해줌.
+
+## Openverse 이미지 검색 장애 대응 (2026-09-14)
+
+`runCardImageSearch()`가 호출하는 `api.openverse.org`는 우리가 운영하지 않는 외부 무료 서비스라, 가끔 그쪽 서버 자체가 다운될 수 있음(2026-09-14에 Cloudflare 504로 전체 다운된 것 확인 — `openverse.org` 메인 도메인 자체가 안 열렸음, 우리 앱 문제가 아니었음). 이런 경우 재시도해도 소용없으므로, 실패 메시지에 "보관함"이나 "+ 이미지 추가"(직접 업로드)로 우회하라는 안내를 포함시킴 — 검색이 막혀도 카드뉴스 작업 자체는 계속할 수 있게.
+
 ## 누끼 따기 / 배경 제거 (2026-09-12 추가)
 
 카드 편집 모달에서 이미지 레이어를 넣으면 "🪄 배경 제거(누끼)" 버튼이 뜬다(차트 이미지 레이어는 제외). 서버 비용이나 이미지 유출 없이 **브라우저 안에서만** 처리하도록 `@imgly/background-removal`(오픈소스, 무료)을 CDN에서 동적으로 불러와 씀 — 별도 API 키나 서버 코드가 필요 없음.

@@ -236,15 +236,22 @@ window.storage = createApiStorage();
    AI 호출: 브라우저는 프롬프트만 서버(/api/ai)로 보내고,
    실제 Anthropic API 키는 서버 환경변수 안에만 있다.
 ========================================================= */
-async function callBackendAI(prompt, useWebSearch, maxTokens){
+async function callBackendAI(prompt, useWebSearch, maxTokens, images){
   const res = await fetch("/api/ai", {
     method:"POST", headers:{ "Content-Type":"application/json" },
-    body: JSON.stringify({ prompt, useWebSearch: !!useWebSearch, maxTokens: maxTokens||2000 })
+    body: JSON.stringify({ prompt, useWebSearch: !!useWebSearch, maxTokens: maxTokens||2000, images: images||undefined })
   });
   if(res.status === 401){ redirectToLogin(); throw new Error("로그인이 필요해요."); }
   const data = await res.json().catch(()=>({}));
   if(!res.ok) throw new Error(data.error || "AI 요청이 실패했어요.");
   return data.text || "";
+}
+
+/* data URL(dataUrl)을 Anthropic Vision API가 받는 {mediaType, data(순수 base64)} 형태로 변환 */
+function dataUrlToVisionImage(dataUrl){
+  const match = /^data:([^;]+);base64,(.*)$/.exec(dataUrl);
+  if(!match) throw new Error("이미지 형식을 읽지 못했어요.");
+  return { mediaType: match[1], data: match[2] };
 }
 
 /* 재작성된 칼럼을 노션 페이지로 업로드: 실제 Notion API 키는 서버(/api/notion)에만 있다 */
@@ -319,6 +326,7 @@ const state = {
   imageLibrary: [],      // [{id, dataUrl, name, addedAt}] — 자주 쓰는 이미지 보관함 (검색해서 저장했든, 직접 업로드했든 여기 모아둠)
   columnsSettingsOpen: false,  // 칼럼 페이지 내 글쓰기 스타일 설정 패널 펼침 여부 (저장 안 함, 세션 한정)
   cardSettingsOpen: false,     // 카드뉴스 페이지 내 카드뉴스 설정 패널 펼침 여부 (저장 안 함, 세션 한정)
+  designReference: { images: [], loading: false, error: "", lastNote: "" }, // 레퍼런스 디자인 학습 패널 상태 (세션 한정, 저장 안 함)
   cardBulkEditOpen: false,     // 완성된 카드뉴스 화면의 "킥커·발행주체 일괄 수정" 패널 펼침 여부 (세션 한정)
 
   // 콘텐츠 라이브러리 (저장된 칼럼·카드뉴스 프로젝트를 한 곳에서 검색·필터링하는 화면, 세션 한정 필터 상태)
@@ -611,6 +619,84 @@ async function loadCardNewsTemplate(id){
 async function deleteCardNewsTemplate(id){
   state.cardNewsTemplates = state.cardNewsTemplates.filter(t=>t.id!==id);
   await saveCardNewsTemplates();
+  render();
+}
+
+/* =========================================================
+   레퍼런스 디자인으로 학습: 실제 파인튜닝/학습이 아니라,
+   Claude Vision에게 참고 이미지를 보여주고 색상 팔레트·타이포·분위기를
+   분석시켜서 "카드뉴스 색상"과 "카드뉴스 스타일 프롬프트" 필드를 자동으로
+   채워주는 기능. 그 뒤로는 기존 "현재 설정을 템플릿으로 저장" 버튼으로
+   이어서 템플릿화하면 된다 — 새 저장소를 만들지 않고 기존 템플릿 시스템에
+   올라타는 구조.
+========================================================= */
+const DESIGN_REFERENCE_MAX_IMAGES = 3;
+
+async function addDesignReferenceImage(file){
+  const dr = state.designReference;
+  if(dr.images.length >= DESIGN_REFERENCE_MAX_IMAGES){
+    alert("레퍼런스 이미지는 최대 "+DESIGN_REFERENCE_MAX_IMAGES+"장까지만 넣을 수 있어요.");
+    return;
+  }
+  const dataUrl = await readFileAsDataURL(file);
+  const thumb = await downscaleImageForLibrary(dataUrl, 1400, 0.85);
+  dr.images.push(thumb);
+  dr.error = "";
+  render();
+}
+
+function removeDesignReferenceImage(index){
+  state.designReference.images.splice(index, 1);
+  render();
+}
+
+async function analyzeDesignReference(){
+  const dr = state.designReference;
+  if(dr.loading) return;
+  if(!dr.images.length){ dr.error = "먼저 참고할 카드뉴스 디자인 이미지를 1장 이상 올려주세요."; render(); return; }
+  dr.loading = true; dr.error = ""; dr.lastNote = "";
+  render();
+  try{
+    const prompt = `너는 인스타그램 카드뉴스(세로형 슬라이드 이미지 콘텐츠) 디자이너야.
+첨부된 이미지는 사용자가 앞으로 만들 카드뉴스가 닮았으면 하는 참고 디자인이야.
+이 이미지의 배경색·글자색·포인트색, 타이포그래피(굵기/폰트 느낌), 여백·레이아웃, 전체 무드를 분석해서
+아래 JSON 형식으로만 답변해. 다른 설명이나 마크다운 코드블록 없이 JSON 객체 하나만 출력해.
+
+{
+  "coverBg": "#RRGGBB",
+  "coverText": "#RRGGBB",
+  "contentBg": "#RRGGBB",
+  "contentText": "#RRGGBB",
+  "ctaBg": "#RRGGBB",
+  "ctaText": "#RRGGBB",
+  "accent": "#RRGGBB",
+  "styleNote": "이 디자인의 느낌을 카드뉴스 생성 프롬프트에 바로 쓸 수 있게 한국어 3~5문장으로 구체적으로 설명 (예: 여백을 넉넉하게 쓰고 문장은 짧게 끊는다, 세리프 계열의 묵직한 헤드라인, 포인트 색은 밑줄이나 박스로만 절제해서 쓴다 등)"
+}
+
+색상은 이미지에서 실제로 관찰되는 색을 최대한 정확한 hex 코드로 추정해줘.
+표지(cover)/본문(content)/CTA(마지막 장) 배경이 이미지 안에서 서로 다르게 보이면 그 차이를 반영하고,
+구분이 안 되면 전체적으로 일관된 색을 같은 값으로 줘도 돼.`;
+
+    const images = dr.images.map(dataUrlToVisionImage);
+    const text = await callBackendAI(prompt, false, 900, images);
+    const parsed = extractJSONBlock(text);
+
+    const colorKeys = ["coverBg","coverText","contentBg","contentText","ctaBg","ctaText","accent"];
+    const newPreset = { ...defaultCardColors() };
+    colorKeys.forEach(k=>{ if(parsed[k] && /^#[0-9a-fA-F]{6}$/.test(parsed[k])) newPreset[k] = parsed[k]; });
+    state.cardColorPresets = newPreset;
+
+    const styleNote = String(parsed.styleNote || "").trim();
+    if(styleNote){
+      state.cardNewsPrompt = (state.cardNewsPrompt ? state.cardNewsPrompt.trim() + "\n\n" : "") + "[레퍼런스 디자인 분석] " + styleNote;
+    }
+    await saveCardColorPresets();
+    await saveCardNewsPrompt();
+    dr.lastNote = styleNote || "색상 팔레트를 적용했어요.";
+  }catch(e){
+    dr.error = "분석에 실패했어요: " + e.message;
+  }
+  dr.loading = false;
   render();
 }
 
@@ -1340,8 +1426,32 @@ function renderCardNewsSettingsPanel(){
     </div>
   `).join("");
 
+  const dr = state.designReference;
+  const drThumbs = (dr.images||[]).map((img, i)=>`
+    <div style="position:relative;width:64px;height:80px;border-radius:6px;overflow:hidden;border:1px solid var(--line);flex-shrink:0;">
+      <img src="${img}" style="width:100%;height:100%;object-fit:cover;display:block;" />
+      <button data-remove-design-reference="${i}" title="삭제" style="position:absolute;top:2px;right:2px;width:18px;height:18px;border-radius:4px;border:none;background:rgba(0,0,0,0.55);color:#fff;font-size:10px;cursor:pointer;display:flex;align-items:center;justify-content:center;">✕</button>
+    </div>
+  `).join("");
+
   return `
     <div style="padding-top:14px;">
+      <div style="font-weight:700;font-size:13px;margin-bottom:6px;">🖼️ 레퍼런스 디자인으로 학습</div>
+      <div class="section-note" style="margin-top:0;">원하는 느낌의 카드뉴스 이미지를 올리면, AI가 색상·타이포·분위기를 분석해서 아래 "카드뉴스 색상"과 "스타일 프롬프트"를 자동으로 채워줘요. (실제로 모델을 재학습시키는 건 아니고, 이미지를 보고 스타일을 읽어서 기존 설정값에 반영하는 방식이에요) 마음에 들면 맨 아래 "현재 설정을 템플릿으로 저장"으로 이어서 템플릿으로 남겨두세요.</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin:8px 0;">
+        ${drThumbs}
+        ${(dr.images||[]).length < DESIGN_REFERENCE_MAX_IMAGES ? `
+          <label class="btn outline" style="width:64px;height:80px;display:flex;align-items:center;justify-content:center;font-size:11px;text-align:center;cursor:pointer;flex-shrink:0;">
+            + 추가
+            <input type="file" accept="image/*" id="design-reference-file-input" style="display:none;" />
+          </label>
+        ` : ""}
+      </div>
+      <button class="btn amber" id="analyze-design-reference-btn" ${dr.loading?"disabled":""}>${dr.loading ? "분석 중..." : "🔍 분석해서 스타일 적용"}</button>
+      ${dr.error ? `<div style="font-size:12px;color:var(--seal);margin-top:8px;">${escapeHtml(dr.error)}</div>` : ""}
+      ${(dr.lastNote && !dr.loading) ? `<div class="banner ok" style="display:block;margin-top:8px;">✅ 적용됨: ${escapeHtml(dr.lastNote)}</div>` : ""}
+      <div style="height:1px;background:var(--line);margin:18px 0;"></div>
+
       <div style="font-weight:700;font-size:13px;margin-bottom:6px;">카드뉴스 색상 · 분위기</div>
       <div class="section-note" style="margin-top:0;">만드는 모든 카드뉴스에 공통으로 적용되는 색상이에요.</div>
       <div style="margin-bottom:16px;">${renderCardColorFields()}</div>
@@ -2615,7 +2725,7 @@ async function runCardImageSearch(){
   render();
   try{
     const res = await fetch("https://api.openverse.org/v1/images/?q="+encodeURIComponent(query)+"&page_size=12");
-    if(!res.ok) throw new Error("검색 요청이 실패했어요 (상태 " + res.status + ")");
+    if(!res.ok) throw new Error("상태 " + res.status);
     const data = await res.json();
     is.results = (data.results||[]).map(r=>({
       thumb: r.thumbnail || r.url,
@@ -2624,7 +2734,9 @@ async function runCardImageSearch(){
     })).filter(r=>r.full);
     if(!is.results.length) is.error = "검색 결과가 없어요. 다른 검색어로 시도해보세요.";
   }catch(e){
-    is.error = "이미지 검색에 실패했어요: " + e.message;
+    // Openverse는 우리가 운영하는 서비스가 아니라, 가끔 그쪽 서버 자체가 다운되는 경우가 있다(504 등).
+    // 그럴 땐 재시도해도 안 되니, 보관함/직접 업로드로 유도하는 안내를 보여준다.
+    is.error = "이미지 검색에 실패했어요 (" + e.message + "). Openverse 서비스 자체에 일시적 문제가 있을 수 있어요 — 잠시 후 다시 시도하거나, 위 '📁 보관함' 탭이나 '+ 이미지 추가'로 직접 올려보세요.";
   }
   is.loading = false;
   render();
@@ -4106,6 +4218,18 @@ function bindRouteEvents(){
       state.cardSettingsOpen = !state.cardSettingsOpen;
       render();
     });
+    const designReferenceFileInput = document.getElementById("design-reference-file-input");
+    if(designReferenceFileInput) designReferenceFileInput.addEventListener("change", async ()=>{
+      const file = designReferenceFileInput.files && designReferenceFileInput.files[0];
+      if(!file) return;
+      try{ await addDesignReferenceImage(file); }
+      catch(e){ alert("이미지를 불러오지 못했어요: " + e.message); }
+    });
+    document.querySelectorAll("[data-remove-design-reference]").forEach(btn=>{
+      btn.addEventListener("click", ()=> removeDesignReferenceImage(Number(btn.dataset.removeDesignReference)));
+    });
+    const analyzeDesignReferenceBtn = document.getElementById("analyze-design-reference-btn");
+    if(analyzeDesignReferenceBtn) analyzeDesignReferenceBtn.addEventListener("click", analyzeDesignReference);
     const saveCardNewsSettingsBtn = document.getElementById("save-cardnews-settings-btn");
     if(saveCardNewsSettingsBtn) saveCardNewsSettingsBtn.addEventListener("click", async ()=>{
       await applyCardNewsSettingsFromForm();
