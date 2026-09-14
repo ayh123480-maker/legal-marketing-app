@@ -2471,67 +2471,95 @@ function loadBlobAsImage(blob){
   });
 }
 
-/* 배경 제거 모델이 만든 알파 마스크는 가장자리가 완전히 0/255로 딱 떨어지지 않고
-   일부 픽셀이 반투명하게 남는데, 그 반투명 픽셀의 RGB엔 원래 배경색이 섞여 있다.
-   그래서 다른 배경 위에 올리면 원래 배경색 테두리(색 번짐)가 얇은 선처럼 보인다.
-   알파 채널에 최소값 필터(침식)를 걸어서 그 오염된 가장자리를 통째로 걷어내고,
-   너무 각지지 않게 살짝만 블러를 줘서 다시 부드럽게 만든다. */
-function decontaminateCutoutEdges(canvas){
-  const ctx = canvas.getContext("2d");
-  const { width, height } = canvas;
-  const radius = Math.min(7, Math.max(2, Math.round(Math.max(width, height) / 300) + 1));
-  const imageData = ctx.getImageData(0, 0, width, height);
-  const data = imageData.data;
+function clampByte(v){ return v<0?0:(v>255?255:Math.round(v)); }
+
+/* 배경 제거 모델이 만든 알파 마스크는 가장자리 픽셀이 완전히 투명(0)하지도
+   완전히 불투명(255)하지도 않은 "부분 투명" 상태로 남는데, 그 픽셀의 RGB는
+   실제로는 "전경색과 원래 배경색이 섞인 색"이다(예: 흰 배경 위 주황 고양이의
+   가장자리 픽셀은 흰색+주황이 섞인 연한 색). 그래서 카드의 새 배경 위에 올리면
+   원래 사진의 배경색이 옅게 비쳐서 테두리 선/얼룩처럼 보인다.
+   전에는 알파 채널을 침식(erosion)해서 가장자리를 통째로 깎아내는 방식을 썼는데,
+   실제 사진(특히 아웃포커싱된 배경)에서는 이 "부분 투명" 구간이 수십~100px씩
+   넓게 나타날 수 있어서, 침식 반경을 그 정도로 키우면 피사체 자체가 깎여나가
+   버린다 — 그래서 테두리가 계속 남는다는 사용자 피드백을 받고 접근을 바꿈.
+   지금은 침식 대신, 원본 사진에서 "진짜 배경"으로 확정된 픽셀(마스크 알파=0)의
+   색을 가져와 가까운 부분투명 픽셀에 전파(BFS)한 뒤, 알파-블렌딩 공식을 거꾸로
+   풀어서(언믹싱) 그 픽셀에서 배경색 기여분을 제거한다. 알파 값 자체(피사체
+   모양)는 그대로 두고 "색"만 고쳐서, 소프트한 가장자리는 유지하면서 배경색
+   번짐만 없앤다. */
+function decontaminateCutoutEdges(cutoutCanvas, originalImg){
+  const ctx = cutoutCanvas.getContext("2d");
+  const { width, height } = cutoutCanvas;
+  const cutoutData = ctx.getImageData(0, 0, width, height);
+  const alphaData = cutoutData.data;
+
+  // 원본 사진을 같은 크기로 그려서, 마스크가 지워버린 자리의 "진짜" 색을 얻는다
+  // (배경 제거 결과물 자체는 알파=0인 픽셀의 RGB를 0으로 지워버리기 때문에 못 씀)
+  const srcCanvas = document.createElement("canvas");
+  srcCanvas.width = width; srcCanvas.height = height;
+  const srcCtx = srcCanvas.getContext("2d");
+  srcCtx.drawImage(originalImg, 0, 0, width, height);
+  const srcData = srcCtx.getImageData(0, 0, width, height).data;
+
   const n = width * height;
-  const alphaIn = new Uint8ClampedArray(n);
-  for(let i=0;i<n;i++) alphaIn[i] = data[i*4+3];
+  const alpha = new Uint8ClampedArray(n);
+  for(let i=0;i<n;i++) alpha[i] = alphaData[i*4+3];
 
-  // 1) 침식: 반경 안에 배경(알파 0)이나 낮은 알파가 있으면 그쪽으로 끌어내린다
-  const eroded = new Uint8ClampedArray(n);
-  for(let y=0;y<height;y++){
-    for(let x=0;x<width;x++){
-      const idx = y*width+x;
-      if(alphaIn[idx] === 0){ eroded[idx] = 0; continue; }
-      let minA = 255;
-      for(let dy=-radius; dy<=radius && minA>0; dy++){
-        const ny = y+dy;
-        for(let dx=-radius; dx<=radius; dx++){
-          const nx = x+dx;
-          const a = (nx<0||ny<0||nx>=width||ny>=height) ? 0 : alphaIn[ny*width+nx];
-          if(a < minA) minA = a;
-          if(minA === 0) break;
-        }
-      }
-      eroded[idx] = minA;
+  const ZERO = 15;   // 이 이하는 어차피 거의 안 보이므로 아예 투명 처리(불안정한 언믹싱 계산을 피함)
+  const HIGH = 235;  // 이 이상은 확실한 전경으로 보고 손대지 않음(모델이 정확히 255를 잘 안 주기 때문)
+
+  // 알파=0(확정 배경)인 자리의 원본 색을, 인접한 부분투명 픽셀들로 BFS 전파해서
+  // 각 부분투명 픽셀이 "실제로 섞였을 배경색"을 추정한다
+  const bgR = new Int16Array(n).fill(-1);
+  const bgG = new Int16Array(n).fill(-1);
+  const bgB = new Int16Array(n).fill(-1);
+  const queue = [];
+  for(let i=0;i<n;i++){
+    if(alpha[i] === 0){
+      bgR[i] = srcData[i*4]; bgG[i] = srcData[i*4+1]; bgB[i] = srcData[i*4+2];
+      queue.push(i);
+    }
+  }
+  let qi = 0;
+  while(qi < queue.length){
+    const idx = queue[qi++];
+    const x = idx % width;
+    const r = bgR[idx], g = bgG[idx], b = bgB[idx];
+    const candidates = [idx-1, idx+1, idx-width, idx+width];
+    for(const nIdx of candidates){
+      if(nIdx < 0 || nIdx >= n) continue;
+      const nx = nIdx % width;
+      if(Math.abs(nx - x) > 1) continue; // 가로 줄바꿈 경계 넘어가는 것 방지
+      if(bgR[nIdx] !== -1) continue;
+      if(alpha[nIdx] >= HIGH) continue; // 확실한 전경 안쪽까지는 전파 안 함
+      bgR[nIdx] = r; bgG[nIdx] = g; bgB[nIdx] = b;
+      queue.push(nIdx);
     }
   }
 
-  // 2) 살짝 블러: 침식으로 생긴 딱딱한 경계를 다시 부드러운 반투명 경계로
-  const blurRadius = 1;
-  for(let y=0;y<height;y++){
-    for(let x=0;x<width;x++){
-      let sum = 0, count = 0;
-      for(let dy=-blurRadius; dy<=blurRadius; dy++){
-        const ny = y+dy; if(ny<0||ny>=height) continue;
-        for(let dx=-blurRadius; dx<=blurRadius; dx++){
-          const nx = x+dx; if(nx<0||nx>=width) continue;
-          sum += eroded[ny*width+nx]; count++;
-        }
-      }
-      data[(y*width+x)*4+3] = Math.round(sum/count);
-    }
+  // 언믹싱: observed = alpha*fg + (1-alpha)*bg 라고 보고 fg를 역산
+  for(let i=0;i<n;i++){
+    const a = alpha[i];
+    if(a === 0 || a >= HIGH) continue;
+    if(a <= ZERO){ alphaData[i*4+3] = 0; continue; }
+    if(bgR[i] === -1) continue; // 배경색 추정 실패 — 보수적으로 그대로 둠
+    const af = a / 255;
+    const r = srcData[i*4], g = srcData[i*4+1], b = srcData[i*4+2];
+    alphaData[i*4]   = clampByte((r - (1-af)*bgR[i]) / af);
+    alphaData[i*4+1] = clampByte((g - (1-af)*bgG[i]) / af);
+    alphaData[i*4+2] = clampByte((b - (1-af)*bgB[i]) / af);
   }
-  ctx.putImageData(imageData, 0, 0);
+  ctx.putImageData(cutoutData, 0, 0);
 }
 
-async function postProcessCutoutBlob(blob){
-  const img = await loadBlobAsImage(blob);
+async function postProcessCutoutBlob(cutoutBlob, originalImg){
+  const cutoutImg = await loadBlobAsImage(cutoutBlob);
   const canvas = document.createElement("canvas");
-  canvas.width = img.naturalWidth;
-  canvas.height = img.naturalHeight;
+  canvas.width = cutoutImg.naturalWidth;
+  canvas.height = cutoutImg.naturalHeight;
   const ctx = canvas.getContext("2d");
-  ctx.drawImage(img, 0, 0);
-  decontaminateCutoutEdges(canvas);
+  ctx.drawImage(cutoutImg, 0, 0);
+  decontaminateCutoutEdges(canvas, originalImg);
   return await new Promise(resolve=> canvas.toBlob(resolve, "image/png"));
 }
 
@@ -2546,6 +2574,7 @@ async function removeImageLayerBackground(idx, layerId){
   try{
     const mod = await loadBgRemovalModule();
     const sourceBlob = await fetch(layer.src).then(r=>r.blob());
+    const originalImg = await loadBlobAsImage(sourceBlob);
     const rawResultBlob = await mod.removeBackground(sourceBlob, {
       model: "isnet_quint8", // 가장 작은 모델(~40MB) — 다운로드 부담을 줄이는 쪽을 우선
       progress: (key, current, total)=>{
@@ -2555,7 +2584,7 @@ async function removeImageLayerBackground(idx, layerId){
     });
     if(ed.bgRemoval) ed.bgRemoval.message = "가장자리 다듬는 중...";
     render();
-    const resultBlob = await postProcessCutoutBlob(rawResultBlob);
+    const resultBlob = await postProcessCutoutBlob(rawResultBlob, originalImg);
     const resultDataUrl = await readFileAsDataURL(resultBlob);
     if(!layer.srcBeforeCutout) layer.srcBeforeCutout = layer.src;
     layer.src = resultDataUrl;
