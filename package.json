@@ -4,7 +4,6 @@
   "private": true,
   "description": "법률 마케팅(개인회생·형사사건) 콘텐츠 파이프라인 도구 - Vercel 배포용",
   "dependencies": {
-    "@vercel/kv": "^1.0.1",
-    "sanitize-html": "^2.17.7"
+    "@vercel/kv": "^1.0.1"
   }
 }
