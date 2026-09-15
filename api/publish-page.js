@@ -1,5 +1,6 @@
 const { isAuthenticated } = require("../lib/auth");
 const { parseBody } = require("../lib/parseBody");
+const { sanitizeColumnBody } = require("../lib/sanitizeColumnBody");
 const { kv } = require("@vercel/kv");
 
 /**
@@ -24,7 +25,7 @@ module.exports = async (req, res) => {
   }
 
   const body = await parseBody(req);
-  const { slug, title, body: columnBody, keyPoints, tags } = body || {};
+  const { slug, title, body: columnBody, keyPoints, tags, bodyFormat } = body || {};
   if (!slug || !title || !columnBody) {
     res.status(400).json({ error: "slug, title, body가 필요해요." });
     return;
@@ -36,9 +37,14 @@ module.exports = async (req, res) => {
     return;
   }
 
+  // bodyFormat "html"은 발행된 페이지의 전체화면 리치 에디터(굵게/소제목/콜아웃/이미지)에서 온
+  // 본문 — 로그인 없이도 열람 가능한 공개 페이지에 그대로 꽂히므로 저장 전에 반드시 정제한다.
+  // 그 외(기본값 "text")는 기존처럼 순수 텍스트로 저장해서 렌더링 시 escapeHtml을 그대로 탄다.
+  const isHtml = bodyFormat === "html";
   const record = {
     title: String(title),
-    body: String(columnBody),
+    body: isHtml ? sanitizeColumnBody(String(columnBody)) : String(columnBody),
+    bodyFormat: isHtml ? "html" : "text",
     keyPoints: Array.isArray(keyPoints) ? keyPoints.filter(Boolean).map(String) : [],
     tags: Array.isArray(tags) ? tags.filter(Boolean).map(String) : [],
     updatedAt: new Date().toISOString(),
