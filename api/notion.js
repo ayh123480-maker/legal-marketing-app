@@ -1,15 +1,30 @@
 const { isAuthenticated } = require("../lib/auth");
 const { parseBody } = require("../lib/parseBody");
+const { sanitizeColumnBody } = require("../lib/sanitizeColumnBody");
+const { fetchNotionPageAsHtml } = require("../lib/notionToHtml");
+const { kv } = require("@vercel/kv");
 
 /**
- * 재작성된 칼럼을 노션 페이지로 만들어줍니다.
- * 실제 Notion API 키는 서버 환경변수(NOTION_API_KEY) 안에만 존재하고,
- * 새 페이지는 NOTION_PARENT_PAGE_ID로 지정한 페이지 아래 하위 페이지로 생성됩니다.
- * body: { title: string, body: string, keyPoints?: string[], tags?: string[],
- *          extraSections?: [{ heading?: string, paragraphs?: string[], bullets?: string[] }] }
- *   extraSections는 본문 뒤에 구분선과 함께 추가로 덧붙는 섹션들 (예: 릴스 대본)
- * 응답: { url: string, pageId: string }  (생성된 노션 페이지 주소/ID —
- *   pageId는 나중에 api/notion-publish.js로 이 페이지 내용을 다시 읽어올 때 씀)
+ * 노션 연동 두 가지를 한 엔드포인트에서 처리한다(2026-09-16에 api/notion-publish.js를
+ * 여기로 합침 — Vercel Hobby 플랜은 배포당 서버리스 함수가 12개까지만 되는데, 그때
+ * 새 엔드포인트를 따로 만들었다가 배포가 통째로 실패했었다. 그래서 함수를 새로
+ * 늘리기보다 관련 있는 기존 엔드포인트에 모드를 추가하는 쪽을 우선한다):
+ *
+ * 1) body에 notionPageId가 없으면: 재작성된 칼럼을 새 노션 페이지로 만든다.
+ *    실제 Notion API 키는 서버 환경변수(NOTION_API_KEY) 안에만 존재하고,
+ *    새 페이지는 NOTION_PARENT_PAGE_ID로 지정한 페이지 아래 하위 페이지로 생성된다.
+ *    body: { title: string, body: string, keyPoints?: string[], tags?: string[],
+ *             extraSections?: [{ heading?: string, paragraphs?: string[], bullets?: string[] }] }
+ *      extraSections는 본문 뒤에 구분선과 함께 추가로 덧붙는 섹션들 (예: 릴스 대본)
+ *    응답: { url: string, pageId: string } (pageId는 아래 2번 호출에 씀)
+ *
+ * 2) body에 notionPageId와 slug가 있으면: 그 노션 페이지(사용자가 노션 앱에서
+ *    직접 수정한 것)를 다시 읽어와서 예쁜 공개 페이지(/c/:slug)로 발행(갱신)한다.
+ *    제목/본문은 노션 쪽이 최신 기준이 되고, keyPoints/tags는 slug로 저장돼있던
+ *    기존 값을 유지한다(단, 이 호출에 keyPoints/tags를 같이 보내면 그 값으로
+ *    덮어씀 — 최초 발행 시 재작성 결과에서 넘겨줄 때 씀).
+ *    body: { slug: string, notionPageId: string, keyPoints?: string[], tags?: string[] }
+ *    응답: { url: string, slug: string }
  */
 module.exports = async (req, res) => {
   if (!isAuthenticated(req)) {
@@ -20,12 +35,23 @@ module.exports = async (req, res) => {
     res.status(405).json({ error: "Method not allowed" });
     return;
   }
-  if (!process.env.NOTION_API_KEY || !process.env.NOTION_PARENT_PAGE_ID) {
-    res.status(500).json({ error: "서버에 NOTION_API_KEY / NOTION_PARENT_PAGE_ID 환경변수가 설정되지 않았어요." });
+  if (!process.env.NOTION_API_KEY) {
+    res.status(500).json({ error: "서버에 NOTION_API_KEY 환경변수가 설정되지 않았어요." });
     return;
   }
 
   const body = await parseBody(req);
+
+  if (body && body.notionPageId && body.slug) {
+    await publishFromNotion(req, res, body);
+    return;
+  }
+
+  if (!process.env.NOTION_PARENT_PAGE_ID) {
+    res.status(500).json({ error: "서버에 NOTION_PARENT_PAGE_ID 환경변수가 설정되지 않았어요." });
+    return;
+  }
+
   const { title, body: columnBody, keyPoints, tags, extraSections } = body || {};
   if (!title || !columnBody) {
     res.status(400).json({ error: "title과 body가 필요해요." });
@@ -112,3 +138,46 @@ module.exports = async (req, res) => {
     res.status(500).json({ error: "노션 업로드 중 오류: " + e.message });
   }
 };
+
+async function publishFromNotion(req, res, body) {
+  const { slug, notionPageId, keyPoints, tags } = body;
+  const safeSlug = String(slug).replace(/[^a-zA-Z0-9_-]/g, "");
+  if (!safeSlug) {
+    res.status(400).json({ error: "슬러그가 올바르지 않아요." });
+    return;
+  }
+
+  try {
+    const { title, bodyHtml } = await fetchNotionPageAsHtml(String(notionPageId));
+    if (!title || !bodyHtml) {
+      res.status(400).json({ error: "노션 페이지에서 제목이나 본문을 읽어오지 못했어요. 페이지에 내용이 있는지 확인해주세요." });
+      return;
+    }
+
+    const existing = (await kv.get(`pubpage:${safeSlug}`)) || {};
+    const record = {
+      title: String(title),
+      body: sanitizeColumnBody(bodyHtml),
+      bodyFormat: "html",
+      keyPoints: Array.isArray(keyPoints)
+        ? keyPoints.filter(Boolean).map(String)
+        : Array.isArray(existing.keyPoints)
+        ? existing.keyPoints
+        : [],
+      tags: Array.isArray(tags)
+        ? tags.filter(Boolean).map(String)
+        : Array.isArray(existing.tags)
+        ? existing.tags
+        : [],
+      notionPageId: String(notionPageId),
+      updatedAt: new Date().toISOString(),
+    };
+
+    await kv.set(`pubpage:${safeSlug}`, record);
+    const proto = req.headers["x-forwarded-proto"] || "https";
+    const origin = `${proto}://${req.headers.host}`;
+    res.status(200).json({ url: `${origin}/c/${safeSlug}`, slug: safeSlug });
+  } catch (e) {
+    res.status(500).json({ error: "노션에서 가져오는 중 오류: " + e.message });
+  }
+}

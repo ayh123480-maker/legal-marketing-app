@@ -14,6 +14,12 @@ const { kv } = require("@vercel/kv");
  *
  * body: { slug: string, title: string, body: string, keyPoints?: string[], tags?: string[] }
  * 응답: { url: string, slug: string }
+ *
+ * title/body 없이 slug + keyPoints/tags만 보내면 "메타만 수정" 모드로 동작한다
+ * (예전엔 api/column-meta.js로 따로 있었는데, Vercel Hobby 플랜의 서버리스 함수
+ * 12개 제한에 걸려서 2026-09-16에 여기로 합쳤다 — Hobby 플랜에서 함수 개수를
+ * 아끼는 게 중요하니, 새 엔드포인트를 늘리기보다 기존 엔드포인트에 모드를
+ * 추가하는 쪽을 우선 고려할 것). 이미 발행된 적 없는 slug면 404.
  */
 module.exports = async (req, res) => {
   if (!isAuthenticated(req)) {
@@ -27,14 +33,38 @@ module.exports = async (req, res) => {
 
   const body = await parseBody(req);
   const { slug, title, body: columnBody, keyPoints, tags, bodyFormat } = body || {};
-  if (!slug || !title || !columnBody) {
-    res.status(400).json({ error: "slug, title, body가 필요해요." });
+  const safeSlug = String(slug || "").replace(/[^a-zA-Z0-9_-]/g, "");
+  if (!safeSlug) {
+    res.status(400).json({ error: "슬러그가 올바르지 않아요." });
     return;
   }
 
-  const safeSlug = String(slug).replace(/[^a-zA-Z0-9_-]/g, "");
-  if (!safeSlug) {
-    res.status(400).json({ error: "슬러그가 올바르지 않아요." });
+  if (!title && !columnBody) {
+    // 메타(핵심 포인트/태그)만 수정 — 제목·본문은 그대로 둔다.
+    try {
+      const existing = await kv.get(`pubpage:${safeSlug}`);
+      if (!existing) {
+        res.status(404).json({ error: "발행된 페이지를 찾을 수 없어요." });
+        return;
+      }
+      const record = {
+        ...existing,
+        keyPoints: Array.isArray(keyPoints) ? keyPoints.filter(Boolean).map(String) : existing.keyPoints || [],
+        tags: Array.isArray(tags) ? tags.filter(Boolean).map(String) : existing.tags || [],
+        updatedAt: new Date().toISOString(),
+      };
+      await kv.set(`pubpage:${safeSlug}`, record);
+      const proto = req.headers["x-forwarded-proto"] || "https";
+      const origin = `${proto}://${req.headers.host}`;
+      res.status(200).json({ url: `${origin}/c/${safeSlug}`, slug: safeSlug });
+    } catch (e) {
+      res.status(500).json({ error: "저장 중 오류: " + e.message });
+    }
+    return;
+  }
+
+  if (!title || !columnBody) {
+    res.status(400).json({ error: "slug, title, body가 필요해요." });
     return;
   }
 

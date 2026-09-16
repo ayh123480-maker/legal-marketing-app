@@ -3507,7 +3507,7 @@ async function runPublishFromNotion(){
   try{
     if(!p.projectId) await saveColumnProject();
     const c = p.rewrittenColumn;
-    const res = await fetch("/api/notion-publish", {
+    const res = await fetch("/api/notion", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ slug: p.projectId, notionPageId: p.notionPageId, keyPoints: c.keyPoints, tags: c.tags }),
     });
