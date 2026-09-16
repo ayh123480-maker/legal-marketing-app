@@ -1,6 +1,7 @@
 const { isAuthenticated } = require("../lib/auth");
 const { parseBody } = require("../lib/parseBody");
 const { sanitizeColumnBody } = require("../lib/sanitizeColumnBody");
+const { sanitizeBlocknoteBlocks } = require("../lib/blocknoteBlocks");
 const { kv } = require("@vercel/kv");
 
 /**
@@ -37,14 +38,37 @@ module.exports = async (req, res) => {
     return;
   }
 
-  // bodyFormat "html"은 발행된 페이지의 전체화면 리치 에디터(굵게/소제목/콜아웃/이미지)에서 온
-  // 본문 — 로그인 없이도 열람 가능한 공개 페이지에 그대로 꽂히므로 저장 전에 반드시 정제한다.
+  // bodyFormat "blocknote-json"은 새 BlockNote 블록 에디터에서 온 블록 JSON —
+  // 구조 검증 + 위험한 URL 스킴 차단(sanitizeBlocknoteBlocks)을 거쳐 정규화된
+  // JSON 문자열로 저장한다.
+  // "html"은 예전 Tiptap 에디터가 저장한 레거시 본문 — 로그인 없이도 열람 가능한
+  // 공개 페이지에 그대로 꽂히므로 저장 전에 반드시 정제한다.
   // 그 외(기본값 "text")는 기존처럼 순수 텍스트로 저장해서 렌더링 시 escapeHtml을 그대로 탄다.
+  const isBlockNoteJson = bodyFormat === "blocknote-json";
   const isHtml = bodyFormat === "html";
+
+  let bodyToStore;
+  let bodyFormatToStore;
+  if (isBlockNoteJson) {
+    const cleanedBlocks = sanitizeBlocknoteBlocks(String(columnBody));
+    if (!cleanedBlocks) {
+      res.status(400).json({ error: "본문 형식이 올바르지 않아요." });
+      return;
+    }
+    bodyToStore = JSON.stringify(cleanedBlocks);
+    bodyFormatToStore = "blocknote-json";
+  } else if (isHtml) {
+    bodyToStore = sanitizeColumnBody(String(columnBody));
+    bodyFormatToStore = "html";
+  } else {
+    bodyToStore = String(columnBody);
+    bodyFormatToStore = "text";
+  }
+
   const record = {
     title: String(title),
-    body: isHtml ? sanitizeColumnBody(String(columnBody)) : String(columnBody),
-    bodyFormat: isHtml ? "html" : "text",
+    body: bodyToStore,
+    bodyFormat: bodyFormatToStore,
     keyPoints: Array.isArray(keyPoints) ? keyPoints.filter(Boolean).map(String) : [],
     tags: Array.isArray(tags) ? tags.filter(Boolean).map(String) : [],
     updatedAt: new Date().toISOString(),
