@@ -8,7 +8,8 @@ const { parseBody } = require("../lib/parseBody");
  * body: { title: string, body: string, keyPoints?: string[], tags?: string[],
  *          extraSections?: [{ heading?: string, paragraphs?: string[], bullets?: string[] }] }
  *   extraSections는 본문 뒤에 구분선과 함께 추가로 덧붙는 섹션들 (예: 릴스 대본)
- * 응답: { url: string }  (생성된 노션 페이지 주소)
+ * 응답: { url: string, pageId: string }  (생성된 노션 페이지 주소/ID —
+ *   pageId는 나중에 api/notion-publish.js로 이 페이지 내용을 다시 읽어올 때 씀)
  */
 module.exports = async (req, res) => {
   if (!isAuthenticated(req)) {
@@ -106,7 +107,7 @@ module.exports = async (req, res) => {
       res.status(response.status).json({ error: msg });
       return;
     }
-    res.status(200).json({ url: data.url });
+    res.status(200).json({ url: data.url, pageId: data.id });
   } catch (e) {
     res.status(500).json({ error: "노션 업로드 중 오류: " + e.message });
   }
