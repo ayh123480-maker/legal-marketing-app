@@ -348,7 +348,7 @@ const state = {
     notionPageId: null,           // 위 노션 페이지의 ID — "노션 내용으로 발행"이 이 값으로 페이지를 다시 읽어옴
     prettyPageUrl: null,          // 발행된 "예쁜 페이지"(/c/:slug) 주소 — 같은 프로젝트로 다시 발행하면 이 링크가 최신 내용으로 갱신됨
     publishDateStr: "",           // 발행 예정일 (선택) — 지정하고 저장하면 콘텐츠 캘린더에도 자동 등록됨
-    loading: { column:false, reels:false, notion:false, pretty:false, notionPublish:false },
+    loading: { column:false, reels:false, notion:false, notionPublish:false },
     error: null,
   },
 
@@ -1542,12 +1542,10 @@ function renderRewrittenColumn(p){
         <button class="btn outline" id="copy-column-btn">📋 복사</button>
         <button class="btn outline" id="upload-notion-btn" ${p.loading.notion?"disabled":""}>${p.loading.notion?"업로드 중...":"📤 노션에 새 페이지로 업로드"}</button>
         ${p.notionUrl ? `<a href="${p.notionUrl}" target="_blank" rel="noopener" class="banner ok" style="margin:0;">✅ 노션 페이지 열기 ↗</a>` : ""}
-        <button class="btn outline" id="publish-pretty-btn" ${p.loading.pretty?"disabled":""}>${p.loading.pretty?"발행 중...":"🎨 예쁜 페이지로 발행"}</button>
         <button class="btn amber" id="publish-from-notion-btn" ${(!p.notionPageId || p.loading.notionPublish)?"disabled":""} title="${p.notionPageId ? "노션 페이지에서 직접 수정한 최신 내용을 가져와서 발행해요" : "먼저 위에서 노션에 업로드해야 이 버튼을 쓸 수 있어요"}">${p.loading.notionPublish?"가져오는 중...":"📥 노션 내용으로 발행"}</button>
         ${p.prettyPageUrl ? `<a href="${p.prettyPageUrl}" target="_blank" rel="noopener" class="banner ok" style="margin:0;">✅ 예쁜 페이지 열기 ↗</a>` : ""}
       </div>
-      ${p.notionPageId ? `<div class="section-note" style="margin-top:8px;">💡 노션 페이지에서 제목·본문·이미지·콜아웃 등을 직접 수정한 뒤 "노션 내용으로 발행"을 누르면, 그 최신 내용으로 예쁜 페이지가 갱신돼요.</div>` : ""}
-      ${p.prettyPageUrl ? `<div class="section-note" style="margin-top:4px;">같은 프로젝트로 다시 발행하면(둘 중 어느 버튼이든) 같은 링크가 최신 내용으로 바뀌어요.</div>` : ""}
+      ${!p.notionPageId ? `<div class="section-note" style="margin-top:8px;">먼저 "노션에 새 페이지로 업로드"를 누르고, 노션 앱에서 제목·본문·이미지·콜아웃·체크리스트 등을 다듬은 뒤 "노션 내용으로 발행"을 누르면 예쁜 페이지가 만들어져요.</div>` : `<div class="section-note" style="margin-top:8px;">💡 노션 페이지에서 내용을 더 고친 뒤 "노션 내용으로 발행"을 다시 누르면, 그 최신 내용으로 예쁜 페이지가 갱신돼요.</div>`}
     </div>
   `;
 }
@@ -3468,38 +3466,10 @@ async function runNotionUpload(){
   render();
 }
 
-/* 재작성된 칼럼을 예쁘게 디자인된 공개 페이지(/c/:slug)로 발행한다.
-   slug는 칼럼 프로젝트 id를 그대로 쓰기 때문에, 아직 저장 안 된 새 프로젝트면
-   먼저 저장부터 해서 안정적인 id를 만든 뒤 그 id로 발행한다.
-   같은 프로젝트를 다시 발행하면 같은 링크가 최신 내용으로 갱신된다(=편집). */
-async function runPublishPrettyPage(){
-  const p = state.pipeline;
-  if(!p.rewrittenColumn) return;
-  p.loading.pretty = true; p.error = null; render();
-  try{
-    if(!p.projectId) await saveColumnProject();
-    const c = p.rewrittenColumn;
-    const res = await fetch("/api/publish-page", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ slug: p.projectId, title: c.title, body: c.body, keyPoints: c.keyPoints, tags: c.tags }),
-    });
-    if(res.status === 401){ redirectToLogin(); throw new Error("로그인이 필요해요."); }
-    const data = await res.json().catch(()=>({}));
-    if(!res.ok) throw new Error(data.error || "페이지 발행이 실패했어요.");
-    p.prettyPageUrl = data.url;
-    const item = state.columnProjects.find(x=>x.id===p.projectId);
-    if(item){ item.prettyPageUrl = data.url; await saveColumnProjects(); }
-  }catch(e){
-    p.error = "예쁜 페이지 발행 중 문제가 생겼어요: " + e.message;
-  }
-  p.loading.pretty = false;
-  render();
-}
-
 /* 노션에 올린 페이지(사용자가 노션 앱에서 직접 수정한 것)를 다시 읽어와서
    예쁜 공개 페이지로 발행한다 — 먼저 "노션에 업로드"를 한 번 해서
-   notionPageId가 있어야 쓸 수 있다. runPublishPrettyPage와 같은 slug를
-   쓰므로, 둘 중 어느 쪽으로 발행하든 같은 링크가 갱신된다. */
+   notionPageId가 있어야 쓸 수 있다. 프로젝트 id를 slug로 쓰므로, 같은
+   프로젝트로 다시 발행하면 같은 링크가 최신 내용으로 갱신된다. */
 async function runPublishFromNotion(){
   const p = state.pipeline;
   if(!p.rewrittenColumn || !p.notionPageId) return;
@@ -3580,7 +3550,7 @@ function resetPipeline(){
     sourceUrl: "", sourceText: "",
     projectId: null, savedJustNow: false,
     rewrittenColumn: null, reelsScript: null, notionUrl: null, notionPageId: null, prettyPageUrl: null, publishDateStr: "",
-    loading: { column:false, reels:false, notion:false, pretty:false, notionPublish:false },
+    loading: { column:false, reels:false, notion:false, notionPublish:false },
     error: null,
   };
   render();
@@ -3600,7 +3570,7 @@ function loadColumnProject(id){
     notionPageId: item.notionPageId || null,
     prettyPageUrl: item.prettyPageUrl || null,
     publishDateStr: (linkedPlan && linkedPlan.dateStr) || "",
-    loading: { column:false, reels:false, notion:false, pretty:false, notionPublish:false },
+    loading: { column:false, reels:false, notion:false, notionPublish:false },
     error: null,
   };
   render();
@@ -4274,8 +4244,6 @@ function bindRouteEvents(){
     });
     const uploadNotionBtn = document.getElementById("upload-notion-btn");
     if(uploadNotionBtn) uploadNotionBtn.addEventListener("click", runNotionUpload);
-    const publishPrettyBtn = document.getElementById("publish-pretty-btn");
-    if(publishPrettyBtn) publishPrettyBtn.addEventListener("click", runPublishPrettyPage);
     const publishFromNotionBtn = document.getElementById("publish-from-notion-btn");
     if(publishFromNotionBtn) publishFromNotionBtn.addEventListener("click", runPublishFromNotion);
     const restoreDraftBtn = document.getElementById("restore-draft-btn");

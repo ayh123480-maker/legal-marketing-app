@@ -148,18 +148,24 @@ async function publishFromNotion(req, res, body) {
   }
 
   try {
-    const { title, bodyHtml } = await fetchNotionPageAsHtml(String(notionPageId));
+    const notionResult = await fetchNotionPageAsHtml(String(notionPageId));
+    const { title, bodyHtml } = notionResult;
     if (!title || !bodyHtml) {
       res.status(400).json({ error: "노션 페이지에서 제목이나 본문을 읽어오지 못했어요. 페이지에 내용이 있는지 확인해주세요." });
       return;
     }
 
     const existing = (await kv.get(`pubpage:${safeSlug}`)) || {};
+    // 노션 본문 안에 "핵심 포인트" 섹션이 있으면 그게 최우선(사용자가 노션에서
+    // 직접 다듬은 것) — 없으면 이 호출에 명시적으로 넘어온 값(최초 발행 시
+    // 재작성 결과), 그것도 없으면 기존 저장 값을 유지.
     const record = {
       title: String(title),
       body: sanitizeColumnBody(bodyHtml),
       bodyFormat: "html",
-      keyPoints: Array.isArray(keyPoints)
+      keyPoints: Array.isArray(notionResult.keyPoints)
+        ? notionResult.keyPoints
+        : Array.isArray(keyPoints)
         ? keyPoints.filter(Boolean).map(String)
         : Array.isArray(existing.keyPoints)
         ? existing.keyPoints
