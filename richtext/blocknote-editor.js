@@ -49,7 +49,54 @@
 const REACT_VERSION = "18.3.1";
 const MANTINE_VERSION = "8.3.11";
 
+/**
+ * 이 에디터가 실제로 얹히는 화면(lib/renderColumnPage.js의 편집 모달)은 칼럼
+ * 열람 페이지와 같은 "애플 뉴스룸풍" 팔레트(연회색 배경 #f5f5f7, 잉크 #1d1d1f,
+ * 블루 액센트 #0071e3)를 쓴다 — BlockNote 기본 테마(파랑기 도는 회색조)가
+ * "너무 밋밋하고 싸구려 느낌"이라는 피드백(2026-09-16)을 받고, 그 페이지 팔레트에
+ * 맞춰 커스텀 테마를 추가함.
+ */
+const SITE_THEME = {
+  colors: {
+    editor: { text: "#1d1d1f", background: "#ffffff" },
+    menu: { text: "#1d1d1f", background: "#ffffff" },
+    tooltip: { text: "#f5f5f7", background: "#1d1d1f" },
+    hovered: { text: "#1d1d1f", background: "#f5f5f7" },
+    selected: { text: "#ffffff", background: "#0071e3" },
+    disabled: { text: "#86868b", background: "#f5f5f7" },
+    shadow: "#d2d2d7",
+    border: "#d2d2d7",
+    sideMenu: "#6e6e73",
+  },
+  borderRadius: 10,
+  fontFamily:
+    '-apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter", "Apple SD Gothic Neo", "Malgun Gothic", sans-serif',
+};
+
+const MANTINE_CSS_LINK_ID = "bn-mantine-style-css";
+
+/**
+ * @blocknote/mantine의 실제 시각 스타일(멘타인 버튼·메뉴·팝오버 CSS와
+ * ".bn-mantine{...}" 변수 스코프)은 esm.sh로 JS만 받아온다고 자동으로 안 딸려온다
+ * — BlockNote 공식 사용법대로 "@blocknote/mantine/style.css"를 따로 불러와야
+ * 하는데, 그 파일이 상대경로로 문 "./mantineStyles.css"를 물고 있고 그 파일은
+ * esm.sh의 exports map 제한에 걸려 404가 난다(BlockNote 패키징 쪽의 실수로 보임 —
+ * package.json exports에 "./mantineStyles.css"가 아예 없음). jsdelivr는 이 제한이
+ * 없어서 그대로 서빙해준다(2026-09-16, "슬래시 메뉴가 배경·아이콘 하나 없이 글자만
+ * 좍 늘어서 보인다"는 문제를 이렇게 확인하고 고쳤음 — 안 믿기면 CDN을 다시 esm.sh로
+ * 바꿔서 스샷 찍어볼 것).
+ */
+function ensureMantineStylesheet() {
+  if (document.getElementById(MANTINE_CSS_LINK_ID)) return;
+  const link = document.createElement("link");
+  link.id = MANTINE_CSS_LINK_ID;
+  link.rel = "stylesheet";
+  link.href = "https://cdn.jsdelivr.net/npm/@blocknote/mantine@0.54.2/src/style.css";
+  document.head.appendChild(link);
+}
+
 async function loadModules() {
+  ensureMantineStylesheet();
   const deps = `react@${REACT_VERSION},react-dom@${REACT_VERSION}`;
   const mantineDeps = `${deps},@mantine/core@${MANTINE_VERSION},@mantine/hooks@${MANTINE_VERSION}`;
   // @blocknote/mantine이 내부적으로 @mantine/core를 물고 오는 순서(hooks, react-dom, react)와
@@ -113,7 +160,7 @@ function resizeImageFile(file) {
 export async function createColumnEditor(mountEl) {
   const { React, ReactDOMClient, reactMod, mantineMod, mantineCoreMod } = await loadModules();
   const { useCreateBlockNote, BlockNoteViewRaw, ComponentsContext } = reactMod;
-  const { components } = mantineMod;
+  const { components, applyBlockNoteCSSVariablesFromTheme } = mantineMod;
   const { MantineProvider } = mantineCoreMod;
 
   let editorInstance = null;
@@ -130,13 +177,33 @@ export async function createColumnEditor(mountEl) {
       editorInstance = editor;
       resolveReady(editor);
     }, [editor]);
+
+    // 사이드 메뉴·서식 툴바 같은 팝업은 editor.portalElement 아래에 별도로 붙기 때문에
+    // (bn-container 안에 있지만 React 트리 밖) 테마 색상 변수를 그 노드에도 따로
+    // 적용해줘야 팝업까지 색이 맞는다 — @blocknote/mantine의 BlockNoteView가 내부적으로
+    // 하는 것과 같은 방식(ref 콜백 + portalElement 양쪽에 적용).
+    const applyTheme = React.useCallback(
+      (node) => {
+        if (node) applyBlockNoteCSSVariablesFromTheme(SITE_THEME, node);
+      },
+      []
+    );
+    React.useEffect(() => {
+      if (editor.portalElement) applyTheme(editor.portalElement);
+    }, [editor, applyTheme]);
+
     return React.createElement(
       MantineProvider,
       { withCssVariables: false, getRootElement: () => undefined },
       React.createElement(
         ComponentsContext.Provider,
         { value: components },
-        React.createElement(BlockNoteViewRaw, { editor, theme: "light" })
+        // className="bn-mantine": @blocknote/mantine이 원래 자동으로 붙여주는 클래스인데,
+        // BlockNoteViewRaw를 직접 쓰면서(위 주석 참고) 우리가 놓치고 있었다 — 멘타인
+        // CSS의 --mantine-* 변수가 전부 ".bn-mantine" 스코프로 정의돼 있어서, 이게
+        // 없으면 버튼·메뉴가 스타일 하나도 안 먹은 맨 텍스트로 보인다(2026-09-16
+        // 실제로 겪은 문제 — 슬래시 메뉴가 카드/배경 없이 글자만 좍 늘어서 보였음).
+        React.createElement(BlockNoteViewRaw, { editor, theme: "light", className: "bn-mantine", ref: applyTheme })
       )
     );
   }
