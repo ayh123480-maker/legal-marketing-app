@@ -142,6 +142,22 @@
     max-height:86vh; overflow:auto;
   }
 
+  /* 비교 화면 — 문단별 출처 호버 (rc-block: 재작성된 칼럼 쪽 블록, src-quote-mark: 왼쪽 원문에서 찾은 인용구) */
+  .rc-block{ position:relative; padding:6px 10px; margin:0 -10px 4px -10px; border-radius:8px; transition:background 0.15s ease; }
+  .rc-block:hover{ background:#fdf1e2; cursor:help; }
+  .rc-src-badge{
+    display:inline-block; font-size:10px; font-weight:700; color:var(--amber);
+    background:#fdf1e2; border-radius:999px; padding:2px 8px; margin-bottom:6px;
+  }
+  .src-quote-mark{ background:transparent; color:inherit; padding:0 1px; border-radius:3px; transition:background 0.15s ease; }
+  .src-quote-mark.active{ background:#fdf1e2; box-shadow:0 0 0 1px var(--amber); }
+  .rc-hover-tooltip{
+    position:fixed; z-index:200; max-width:320px; background:var(--ink); color:#fff;
+    font-size:12px; line-height:1.6; padding:10px 12px; border-radius:8px;
+    box-shadow:0 4px 16px rgba(0,0,0,0.25); pointer-events:none; display:none;
+  }
+  .rc-hover-tooltip b{ color:#e0c090; }
+
   .mobile-nav-toggle{
     display:none; background:transparent; border:1px solid rgba(255,255,255,0.3); color:#fff;
     border-radius:6px; padding:6px 10px; font-size:16px; line-height:1; cursor:pointer; flex-shrink:0;
@@ -343,9 +359,10 @@ const state = {
     sourceText: "",
     projectId: null,              // 저장된 프로젝트를 불러와 편집 중이면 그 프로젝트의 id, 새 프로젝트면 null
     savedJustNow: false,          // 방금 저장했음을 잠깐 보여주기 위한 플래그
-    rewrittenColumn: null,        // {title, subtitle, body, keyPoints:[], tags:[], structured:{introduction,sections,conclusion}|null}
+    rewrittenColumn: null,        // {title, subtitle, body, keyPoints:[], tags:[], structured:{introduction,sections,conclusion}|null, sourceMap:{blockId:{label,quote}}}
                                    // structured는 생성 직후에만 채워지고, 본문(body) 텍스트영역을 직접 고치면 무효화(null)된다 —
                                    // 노션 업로드는 structured가 있으면 소제목/목록/콜아웃으로, 없으면(레거시 프로젝트 포함) 평문 문단으로 올라간다.
+                                   // sourceMap은 비교 화면 호버 출처 표시용(AI 판단, 참고용) — structured가 없으면 의미 없음.
     reelsScript: null,            // {hook, durationSec, scenes:[{timeRange, narration, visual, onScreenText}], cta}
     notionUrl: null,              // 방금 업로드한 노션 페이지 주소 (있으면 "노션 페이지 열기" 링크로 표시)
     notionWarning: null,          // 블록이 100개 넘어서 일부가 이어붙이기 요청으로 추가되다 실패했을 때만 채워지는 한국어 안내
@@ -365,6 +382,7 @@ const state = {
     revisionHistory: [],          // [{instruction, at}] — 지금까지 내린 수정 지시 로그(표시용, 프롬프트에는 안 씀)
     lastGenerationSources: null,  // {mainSource:{label,text}, references:[{label,text}]} — 재구성 리포트의 겹침 점검용, 프로젝트 저장에는 포함 안 함
     compareViewOpen: false,       // 비교 화면(큰 모달) 펼침 여부 — 세션 한정, 저장 안 함
+    compareEditMode: false,       // 비교 화면에서 "출처 호버 보기"(기본) 대신 기존 텍스트박스 직접 편집 모드를 켰는지 — 세션 한정, 저장 안 함
     loading: { column:false, reels:false, notion:false, notionPublish:false, revision:false },
     error: null,
   },
@@ -1713,6 +1731,78 @@ function renderGroundingCheckHtml(report){
   return "";
 }
 
+/* =========================================================
+   비교 화면 — 문단별 출처 호버 표시
+   (재작성된 칼럼의 도입/섹션/결론 각 블록에 마우스를 올리면, 그 블록이 AI 판단상 어느
+   소스에서 왔는지 보여주고, 소스 패널에서 실제로 인용한 문장을 찾을 수 있으면 강조한다.
+   sourceMap은 AI 자기보고라 "참고용"이며, 인용문(quote)이 소스 원문에 토씨 하나까지
+   정확히 있을 때만(indexOf로 결정론적 확인) 하이라이트하고, 못 찾으면 라벨만 보여준다.)
+========================================================= */
+// AI가 "주요 원문, 레퍼런스 1"처럼 여러 라벨을 쉼표로 나열할 수 있어 토큰 단위로 느슨하게 비교
+function labelMatchesSource(aiLabel, sourceLabel){
+  if(!aiLabel || !sourceLabel) return false;
+  return aiLabel.split(/[,·\/]+/).map(s=>s.trim()).filter(Boolean)
+    .some(tok => tok === sourceLabel || tok.includes(sourceLabel) || sourceLabel.includes(tok));
+}
+
+// sourceMap 중 이 소스(sourceLabel)를 가리키면서, quote가 sourceText에 실제로(정확히) 있는 항목만 위치를 찾는다
+function locateSourceQuoteMarks(sourceMap, sourceLabel, sourceText){
+  const marks = [];
+  Object.keys(sourceMap||{}).forEach(blockId=>{
+    const entry = sourceMap[blockId];
+    if(!entry || !entry.quote || !labelMatchesSource(entry.label, sourceLabel)) return;
+    const idx = sourceText.indexOf(entry.quote);
+    if(idx >= 0) marks.push({ start: idx, end: idx + entry.quote.length, blockId });
+  });
+  return marks.sort((a,b)=>a.start-b.start);
+}
+
+// 소스 원문 텍스트를 위 marks 기준으로 잘라, 일치한 구간만 <mark>로 감싼 HTML을 만든다
+function renderSourceTextWithMarks(sourceText, marks){
+  if(!marks.length) return `<div style="white-space:pre-wrap;">${escapeHtml(sourceText)}</div>`;
+  let html = "";
+  let cursor = 0;
+  marks.forEach(m=>{
+    if(m.start < cursor) return; // 드물게 겹치면 뒤엣것은 무시
+    html += escapeHtml(sourceText.slice(cursor, m.start));
+    html += `<mark class="src-quote-mark" data-src-block="${escapeHtml(m.blockId)}">${escapeHtml(sourceText.slice(m.start, m.end))}</mark>`;
+    cursor = m.end;
+  });
+  html += escapeHtml(sourceText.slice(cursor));
+  return `<div style="white-space:pre-wrap;">${html}</div>`;
+}
+
+// 재작성된 칼럼을 도입/섹션별/결론 블록으로 나눠서, 블록마다 출처 배지를 붙인 읽기 전용 HTML을 만든다
+// (기존 textarea는 구조가 평문으로 다 뭉개져서 소제목·목록이 안 보이고, 블록 단위 호버도 불가능했다)
+function renderColumnBlockPreviewHtml(c){
+  const sourceMap = c.sourceMap || {};
+  const s = c.structured;
+  const blocks = [];
+  if(s.introduction){
+    blocks.push({ id:"intro", html:`<div style="white-space:pre-wrap;">${escapeHtml(s.introduction)}</div>` });
+  }
+  (s.sections||[]).forEach((sec, i)=>{
+    const parts = [];
+    if(sec.heading) parts.push(`<div style="font-weight:700;font-size:14px;margin:0 0 8px 0;">${escapeHtml(sec.heading)}</div>`);
+    sec.paragraphs.forEach(para=> parts.push(`<div style="white-space:pre-wrap;margin:0 0 10px 0;">${escapeHtml(para)}</div>`));
+    if(sec.bullets && sec.bullets.length){
+      const tag = sec.ordered ? "ol" : "ul";
+      parts.push(`<${tag} style="margin:0 0 10px 18px;padding:0;">${sec.bullets.map(b=>`<li>${escapeHtml(b)}</li>`).join("")}</${tag}>`);
+    }
+    if(sec.quote) parts.push(`<blockquote style="margin:0 0 10px 0;padding:8px 12px;border-left:3px solid var(--amber);background:#fbf6ee;font-style:italic;">${escapeHtml(sec.quote)}</blockquote>`);
+    if(sec.callout) parts.push(`<div style="margin:0 0 10px 0;padding:10px 12px;background:#eef0f4;border-radius:8px;font-weight:600;">${escapeHtml(sec.callout)}</div>`);
+    blocks.push({ id:"section-"+i, html: parts.join("") });
+  });
+  if(s.conclusion){
+    blocks.push({ id:"conclusion", html:`<div style="white-space:pre-wrap;">${escapeHtml(s.conclusion)}</div>` });
+  }
+  return blocks.map(b=>{
+    const meta = sourceMap[b.id];
+    const badge = meta ? `<span class="rc-src-badge">📎 ${escapeHtml(meta.label)}</span>` : "";
+    return `<div class="rc-block" data-block-id="${b.id}">${badge}${b.html}</div>`;
+  }).join("");
+}
+
 function renderRewriteReport(c){
   const report = c.report;
   if(!report) return "";
@@ -1741,6 +1831,10 @@ function renderRewriteReport(c){
    재사용해도 중복되지 않는다. */
 function renderColumnEditorFields(p, c, opts){
   const includeReport = !opts || opts.includeReport !== false;
+  // 비교 화면에서만: 구조화 데이터가 있으면 기본으로 "출처 호버 보기"(읽기 전용, 블록별 출처 배지)를
+  // 보여주고, 사용자가 원하면 기존 textarea 직접 편집 모드로 전환할 수 있게 한다.
+  const canPreview = !!(opts && opts.compareView) && !!c.structured;
+  const showPreview = canPreview && !p.compareEditMode;
   const structuredNote = computeStructuredNote(c);
   // notionPageId는 있는데 이번 세션에 방금 올린 게 아니면 "예전에 이미 업로드해둔 프로젝트"다 —
   // 이 경우 매번 새 페이지가 생기는 걸 막을 수는 없지만(노션 페이지 안전 갱신은 범위 밖,
@@ -1751,7 +1845,13 @@ function renderColumnEditorFields(p, c, opts){
   return `
       <input class="field serif" id="rc-title-input" style="width:100%;font-weight:700;font-size:16px;margin-bottom:8px;" value="${escapeHtml(c.title||"")}" />
       ${c.subtitle ? `<div class="section-note" style="margin:0 0 8px 0;font-style:italic;">${escapeHtml(c.subtitle)}</div>` : ""}
-      <textarea class="field" id="rc-body-textarea" style="width:100%;min-height:240px;font-size:13px;line-height:1.7;">${escapeHtml(c.body||"")}</textarea>
+      ${canPreview ? `<div style="display:flex;justify-content:flex-end;margin-bottom:6px;">
+        <button class="btn outline" id="toggle-compare-edit-mode-btn" style="font-size:11px;padding:4px 10px;">${p.compareEditMode ? "🔍 출처 보기 모드로 전환" : "✏️ 직접 편집 모드로 전환"}</button>
+      </div>` : ""}
+      ${showPreview
+        ? `<div class="section-note" style="margin:0 0 8px 0;">🖱️ 문단에 마우스를 올리면 왼쪽 원문에서 어느 부분을 참고했는지 보여줘요.</div>
+           <div id="rc-body-preview">${renderColumnBlockPreviewHtml(c)}</div>`
+        : `<textarea class="field" id="rc-body-textarea" style="width:100%;min-height:240px;font-size:13px;line-height:1.7;">${escapeHtml(c.body||"")}</textarea>`}
       <div class="section-note" id="rc-charcount" style="margin:6px 0 0 0;">${formatCharCountNote(c.body||"")} · ${structuredNote} 본문을 여기서 고치면 다음 노션 업로드는 평문으로 올라가요 — 소제목·목록을 살리고 싶으면 노션에서 직접 다듬어주세요.</div>
       <div id="rc-ad-risk-warning">${formatAdRiskWarning(c.body||"")}</div>
       <div style="margin-top:8px;">
@@ -1808,26 +1908,29 @@ function renderRewrittenColumn(p){
 
 /* 비교 화면(큰 모달) — 왼쪽엔 소스(주요 원문 + 레퍼런스), 오른쪽엔 재작성된 칼럼을 나란히 두고,
    그 아래(스크롤하면 나오는 영역)에 재구성 리포트를 보여준다. renderColumnEditorFields를 그대로
-   재사용해서 편집·업로드·수정지시 기능은 작은 뷰와 동일하게 동작한다. */
+   재사용해서 편집·업로드·수정지시 기능은 작은 뷰와 동일하게 동작한다. 오른쪽은 기본으로
+   "출처 호버 보기"(compareView 옵션) — 문단(블록)마다 sourceMap을 참고해 배지를 붙이고,
+   마우스를 올리면 왼쪽에서 실제로 인용한 문장(있으면)을 찾아 강조한다. */
 function renderColumnCompareView(p){
   const c = p.rewrittenColumn;
   const sources = p.lastGenerationSources;
   const roleLabel = (role) => REFERENCE_ROLE_LABELS[role] || role;
   const weightLabel = (weight) => REFERENCE_WEIGHT_LABELS[weight] || weight;
 
+  const sourceMap = c.sourceMap || {};
   const sourcesPanel = !sources ? `
     <div class="section-note">이 세션에서 생성한 원문 기록이 없어요 (저장된 프로젝트를 다시 불러왔거나, 페이지를 새로고침했을 수 있어요). 소스 원문을 보려면 새로 생성해주세요.</div>
   ` : `
     <div style="margin-bottom:16px;">
       <div style="font-size:12px;font-weight:700;opacity:0.7;margin-bottom:6px;">📌 ${escapeHtml(sources.mainSource.label)}</div>
-      <div style="font-size:12px;line-height:1.7;white-space:pre-wrap;">${escapeHtml(sources.mainSource.text)}</div>
+      <div style="font-size:12px;line-height:1.7;">${renderSourceTextWithMarks(sources.mainSource.text, locateSourceQuoteMarks(sourceMap, sources.mainSource.label, sources.mainSource.text))}</div>
     </div>
     ${sources.references.map((r)=>{
       return `
         <div style="margin-bottom:16px;border-top:1px solid var(--line);padding-top:12px;">
           <div style="font-size:12px;font-weight:700;opacity:0.7;margin-bottom:6px;">📎 ${escapeHtml(r.label)}${r.role ? ` · ${escapeHtml(roleLabel(r.role))}` : ""}${r.weight ? ` · 비중 ${escapeHtml(weightLabel(r.weight))}` : ""}</div>
           ${r.usageNote ? `<div style="font-size:11px;opacity:0.6;margin-bottom:6px;">활용 지침: ${escapeHtml(r.usageNote)}</div>` : ""}
-          <div style="font-size:12px;line-height:1.7;white-space:pre-wrap;">${escapeHtml(r.text)}</div>
+          <div style="font-size:12px;line-height:1.7;">${renderSourceTextWithMarks(r.text, locateSourceQuoteMarks(sourceMap, r.label, r.text))}</div>
         </div>
       `;
     }).join("")}
@@ -1836,24 +1939,26 @@ function renderColumnCompareView(p){
   return `
     <div class="modal-backdrop" id="compare-view-backdrop" style="align-items:stretch;justify-content:stretch;padding:16px;z-index:150;">
       <div class="modal-box" id="compare-view-box" style="width:100%;max-width:1400px;height:100%;margin:0 auto;display:flex;flex-direction:column;overflow:auto;">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-shrink:0;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;flex-shrink:0;flex-wrap:wrap;gap:8px;">
           <div style="font-weight:700;font-size:15px;">🔍 재작성된 칼럼 비교 보기</div>
           <button class="btn outline" id="close-compare-view-btn">✕ 닫기</button>
         </div>
+        <div class="section-note" style="flex-shrink:0;">왼쪽은 원본 자료, 오른쪽은 재작성된 칼럼이에요. 오른쪽 문단에 마우스를 올리면 왼쪽에서 관련된 부분을 찾아 강조해줘요.</div>
         <div style="display:flex;gap:16px;flex-wrap:wrap;">
           <div id="compare-sources-panel" style="flex:1;min-width:320px;max-height:65vh;overflow:auto;border:1px solid var(--line);border-radius:8px;padding:14px;">
-            <div style="font-weight:700;font-size:13px;margin-bottom:10px;">📄 소스 자료</div>
+            <div style="font-weight:700;font-size:13px;margin-bottom:10px;position:sticky;top:0;background:#fff;padding-bottom:8px;">📄 소스 자료</div>
             ${sourcesPanel}
           </div>
           <div id="compare-column-panel" style="flex:1;min-width:320px;max-height:65vh;overflow:auto;border:1px solid var(--line);border-radius:8px;padding:14px;">
-            <div style="font-weight:700;font-size:13px;margin-bottom:10px;">✍️ 재작성된 칼럼</div>
-            ${renderColumnEditorFields(p, c, { includeReport: false })}
+            <div style="font-weight:700;font-size:13px;margin-bottom:10px;position:sticky;top:0;background:#fff;padding-bottom:8px;">✍️ 재작성된 칼럼</div>
+            ${renderColumnEditorFields(p, c, { includeReport: false, compareView: true })}
           </div>
         </div>
         <div style="margin-top:16px;flex-shrink:0;">
           ${renderRewriteReport(c)}
         </div>
       </div>
+      <div id="rc-hover-tooltip" class="rc-hover-tooltip"></div>
     </div>
   `;
 }
@@ -3446,7 +3551,11 @@ function buildColumnOutputContract({ includeReport } = {}){
 ###SUBTITLE###
 (부제 또는 한 줄 요약 — 없으면 이 줄을 비워둬)
 ###INTRODUCTION###
-(도입 문단. 문단이 여러 개면 사이에 빈 줄을 넣어서 구분)
+(도입 문단. 문단이 여러 개면 사이에 빈 줄을 넣어서 구분)${includeReport ? `
+###INTRO_SOURCE###
+(도입부가 주로 어디서 왔는지 — "주요 원문"이라고 쓰거나, 레퍼런스를 썼으면 그 레퍼런스 라벨을 정확히 그대로 써. 여러 소스를 섞었으면 쉼표로 구분해서 전부 써. 애매하면 "주요 원문"이라고 써.)
+###INTRO_SOURCE_QUOTE###
+(위에서 고른 소스에 실제로 있는 문장을 하나, 토씨 하나 안 틀리고 그대로 복사해서 붙여넣어. 정확히 복사할 수 없으면 이 줄은 비워둬.)` : ""}
 ###SECTIONS_START###
 ###SECTION###
 ###HEADING###
@@ -3462,7 +3571,11 @@ function buildColumnOutputContract({ includeReport } = {}){
 ###CALLOUT###
 (정말 강조할 내용이 있을 때만 — 없으면 비워둬)
 ###QUOTE###
-(원문에 실제로 있는 문장을 그대로 인용할 때만 — 없으면 비워둬)
+(원문에 실제로 있는 문장을 그대로 인용할 때만 — 없으면 비워둬)${includeReport ? `
+###SOURCE###
+(이 섹션 내용이 주로 어디서 왔는지 — "주요 원문"이라고 쓰거나, 레퍼런스를 썼으면 그 레퍼런스 라벨을 정확히 그대로 써. 여러 소스를 섞었으면 쉼표로 구분해서 전부 써.)
+###SOURCE_QUOTE###
+(위에서 고른 소스에 실제로 있는 문장을 하나만, 토씨 하나 안 틀리고 그대로 복사해서 붙여넣어 — 이 섹션과 가장 관련 있는 문장. 정확히 복사할 수 없으면 이 줄은 비워둬.)` : ""}
 ###SECTION###
 (다음 섹션도 위와 똑같은 형식으로 반복 — 총 2~5개)
 ###SECTIONS_END###
@@ -3471,7 +3584,11 @@ function buildColumnOutputContract({ includeReport } = {}){
 (핵심 포인트 2)
 (핵심 포인트 3)
 ###CONCLUSION###
-(결론 문단)
+(결론 문단)${includeReport ? `
+###CONCLUSION_SOURCE###
+(결론이 주로 어디서 왔는지 — 위와 같은 방식. 새로운 내용 없이 요약·제안뿐이면 "주요 원문"이라고 써도 돼.)
+###CONCLUSION_SOURCE_QUOTE###
+(위에서 고른 소스에 실제로 있는 문장을 하나, 토씨 하나 안 틀리고 그대로 복사 — 정확히 복사할 수 없으면 비워둬.)` : ""}
 ###TAGS###
 태그1, 태그2, 태그3${includeReport ? `
 ###REPORT_CHANGES###
@@ -3508,8 +3625,10 @@ function parseColumnSectionBlock(block){
   const ordered = bullets.length > 0 && /^\s*true\s*$/i.test(f.ORDERED || "");
   const callout = (f.CALLOUT || "").trim();
   const quote = (f.QUOTE || "").trim();
+  const source = (f.SOURCE || "").trim();
+  const sourceQuote = (f.SOURCE_QUOTE || "").trim();
   if(!heading && !paragraphs.length && !bullets.length && !callout && !quote) return null;
-  return { heading, paragraphs, bullets, ordered, callout, quote };
+  return { heading, paragraphs, bullets, ordered, callout, quote, source, sourceQuote };
 }
 
 /* AI가 낸 태그 구분자 응답을 검증·보정해서 앱 내부 형태로 바꾼다. 필드 누락이나
@@ -3533,8 +3652,12 @@ function parseStructuredColumnResponse(raw, opts){
   const title = (headerFields.TITLE || "").trim();
   const subtitle = (headerFields.SUBTITLE || "").trim();
   const introduction = (headerFields.INTRODUCTION || "").trim();
+  const introSource = (headerFields.INTRO_SOURCE || "").trim();
+  const introSourceQuote = (headerFields.INTRO_SOURCE_QUOTE || "").trim();
   const keyPoints = coerceStringArray(footerFields.KEYPOINTS, /\n+/);
   const conclusion = (footerFields.CONCLUSION || "").trim();
+  const conclusionSource = (footerFields.CONCLUSION_SOURCE || "").trim();
+  const conclusionSourceQuote = (footerFields.CONCLUSION_SOURCE_QUOTE || "").trim();
   const tags = coerceStringArray(footerFields.TAGS, /[,\n]+/).map(t=>t.replace(/^#/, ""));
   const reportChanges = (footerFields.REPORT_CHANGES || "").trim();
   const reportReferenceNotes = coerceStringArray(footerFields.REPORT_REFERENCES, /\n+/);
@@ -3569,11 +3692,20 @@ function parseStructuredColumnResponse(raw, opts){
   });
   if(conclusion) bodyParts.push(conclusion);
 
+  // 블록(도입/섹션별/결론)마다 "이 내용이 주로 어디서 왔는지" — AI 판단(참고용)이라, 응답에
+  // 해당 태그가 없으면(수정 지시 응답 — includeReport를 안 준 호출) 그냥 비워둔다. 이 경우
+  // 호출한 쪽(applyColumnRevision)이 이전 sourceMap을 내용이 안 바뀐 블록에 한해 이어붙인다.
+  const sourceMap = {};
+  if(introSource) sourceMap.intro = { label: introSource, quote: introSourceQuote };
+  sections.forEach((sec, i)=>{ if(sec.source) sourceMap["section-"+i] = { label: sec.source, quote: sec.sourceQuote }; });
+  if(conclusionSource) sourceMap.conclusion = { label: conclusionSource, quote: conclusionSourceQuote };
+
   return {
     title, subtitle, body: bodyParts.join("\n\n"),
     keyPoints, tags,
     structured: { introduction, sections, conclusion },
     report, // { changesSummary, referenceNotes, overlaps } | null — overlaps는 파싱과 무관하게 항상 나중에 별도로 채워짐(아래 computeSimilarityReport)
+    sourceMap, // { blockId: {label, quote} } — 비교 화면 호버 출처 표시용(AI 판단, 참고용). 8절/아래 carryForwardSourceMap 참고
   };
 }
 
@@ -3695,6 +3827,27 @@ async function generateRewrittenColumn(){
   return result;
 }
 
+/* 수정 지시 응답에는 SOURCE 태그가 없어서(원문을 다시 안 보내므로 AI가 새로 판단할 근거가
+   없음) sourceMap이 항상 비어 나온다. 그래서 이전 원고의 sourceMap을, "지시하지 않은 부분은
+   그대로 유지"되는 일반적인 경우에 한해 이어붙인다 — 블록 내용(제목·문단·목록)이 토씨 하나
+   안 틀리고 완전히 같을 때만 이어받고, 조금이라도 바뀐 블록은 잘못된 출처를 보여주느니
+   차라리 출처 없음으로 둔다. */
+function carryForwardSourceMap(oldStructured, oldSourceMap, newStructured){
+  const result = {};
+  if(!oldSourceMap || !oldStructured || !newStructured) return result;
+  if(oldSourceMap.intro && oldStructured.introduction === newStructured.introduction) result.intro = oldSourceMap.intro;
+  if(oldSourceMap.conclusion && oldStructured.conclusion === newStructured.conclusion) result.conclusion = oldSourceMap.conclusion;
+  (newStructured.sections||[]).forEach((sec, i)=>{
+    const mapped = oldSourceMap["section-"+i];
+    const old = (oldStructured.sections||[])[i];
+    if(!mapped || !old) return;
+    const unchanged = old.heading===sec.heading && old.paragraphs.join("\n")===sec.paragraphs.join("\n")
+      && old.bullets.join("\n")===sec.bullets.join("\n") && old.quote===sec.quote && old.callout===sec.callout;
+    if(unchanged) result["section-"+i] = mapped;
+  });
+  return result;
+}
+
 // rewrittenColumn.report.overlaps를 lastGenerationSources 기준으로 (다시) 계산한다
 function computeOverlapsForDraft(bodyText, lastGenerationSources){
   if(!lastGenerationSources) return [];
@@ -3759,6 +3912,7 @@ async function applyColumnRevision(instruction){
   // includeReport를 안 줌) 이전 리포트(최초 생성 시 만든 것)를 이어받는다 — AI 서술 부분은
   // 그대로 유지하고, 겹침 점검(overlaps)만 이번 수정된 본문 기준으로 새로 계산한다.
   const result = parseStructuredColumnResponse(raw, { previousReport: p.rewrittenColumn.report || null });
+  result.sourceMap = carryForwardSourceMap(p.rewrittenColumn.structured, p.rewrittenColumn.sourceMap, result.structured);
   if(result.report) result.report.overlaps = computeOverlapsForDraft(result.body, p.lastGenerationSources);
   return result;
 }
@@ -4366,7 +4520,7 @@ function resetPipeline(){
     projectId: null, savedJustNow: false,
     rewrittenColumn: null, reelsScript: null, notionUrl: null, notionWarning: null, notionPageId: null, prettyPageUrl: null, publishDateStr: "",
     references: [], referencesOpen: false, briefOpen: false, brief: createEmptyBrief(),
-    revisionInstruction: "", revisionHistory: [], lastGenerationSources: null, compareViewOpen: false,
+    revisionInstruction: "", revisionHistory: [], lastGenerationSources: null, compareViewOpen: false, compareEditMode: false,
     loading: { column:false, reels:false, notion:false, notionPublish:false, revision:false },
     error: null,
   };
@@ -4383,6 +4537,7 @@ function normalizeLoadedRewrittenColumn(c){
     tags: Array.isArray(c.tags) ? c.tags : [],
     structured: c.structured || null, // 예전에 저장된 프로젝트는 항상 null → 노션 업로드 시 평문 경로로 자동 폴백
     report: c.report || null, // 예전에 저장된 프로젝트는 항상 null → 재구성 리포트 섹션 자체를 안 보여줌
+    sourceMap: null, // 비교 화면 호버 출처는 이번 세션에서 생성한 원문(lastGenerationSources)이 있어야 의미가 있어서, 프로젝트를 다시 불러온 세션에서는 항상 비움
   };
 }
 
@@ -4403,7 +4558,7 @@ function loadColumnProject(id){
     publishDateStr: (linkedPlan && linkedPlan.dateStr) || "",
     // 레퍼런스/브리프는 생성 시점 입력 재료일 뿐이라 프로젝트에 저장하지 않음 — 항상 빈 상태로 시작
     references: [], referencesOpen: false, briefOpen: false, brief: createEmptyBrief(),
-    revisionInstruction: "", revisionHistory: [], lastGenerationSources: null, compareViewOpen: false,
+    revisionInstruction: "", revisionHistory: [], lastGenerationSources: null, compareViewOpen: false, compareEditMode: false,
     loading: { column:false, reels:false, notion:false, notionPublish:false, revision:false },
     error: null,
   };
@@ -5135,6 +5290,35 @@ function bindRouteEvents(){
     if(openCompareViewBtn) openCompareViewBtn.addEventListener("click", ()=>{ state.pipeline.compareViewOpen = true; render(); });
     const closeCompareViewBtn = document.getElementById("close-compare-view-btn");
     if(closeCompareViewBtn) closeCompareViewBtn.addEventListener("click", ()=>{ state.pipeline.compareViewOpen = false; render(); });
+    const toggleCompareEditModeBtn = document.getElementById("toggle-compare-edit-mode-btn");
+    if(toggleCompareEditModeBtn) toggleCompareEditModeBtn.addEventListener("click", ()=>{ state.pipeline.compareEditMode = !state.pipeline.compareEditMode; render(); });
+    // 비교 화면 - 문단에 마우스를 올리면 왼쪽 소스 패널에서 관련 인용구를 강조 + 툴팁 표시.
+    // render()를 다시 부르지 않고 DOM만 직접 건드려서(2026-09-10 스크롤 버그 재발 방지), 자주 발생하는
+    // mouseenter/mouseleave에도 화면이 안 흔들리게 한다.
+    const rcHoverTooltip = document.getElementById("rc-hover-tooltip");
+    document.querySelectorAll(".rc-block[data-block-id]").forEach(block=>{
+      const blockId = block.dataset.blockId;
+      const meta = (state.pipeline.rewrittenColumn && state.pipeline.rewrittenColumn.sourceMap) ? state.pipeline.rewrittenColumn.sourceMap[blockId] : null;
+      block.addEventListener("mouseenter", ()=>{
+        const marks = document.querySelectorAll(`.src-quote-mark[data-src-block="${blockId}"]`);
+        marks.forEach(m=>m.classList.add("active"));
+        if(marks.length) marks[0].scrollIntoView({ behavior:"smooth", block:"center" });
+        if(rcHoverTooltip){
+          rcHoverTooltip.innerHTML = meta
+            ? `<b>출처</b> ${escapeHtml(meta.label)}${meta.quote ? `<div style="margin-top:6px;opacity:0.85;">"${escapeHtml(meta.quote)}"</div>` : ""}`
+            : `<b>출처</b> 이 부분은 출처 정보가 없어요 (직접 수정했거나, AI가 특정하지 못했어요).`;
+          const r = block.getBoundingClientRect();
+          rcHoverTooltip.style.left = Math.max(8, Math.min(r.left, window.innerWidth - 336)) + "px";
+          rcHoverTooltip.style.top = Math.max(8, r.top - 8) + "px";
+          rcHoverTooltip.style.transform = "translateY(-100%)";
+          rcHoverTooltip.style.display = "block";
+        }
+      });
+      block.addEventListener("mouseleave", ()=>{
+        document.querySelectorAll(`.src-quote-mark[data-src-block="${blockId}"]`).forEach(m=>m.classList.remove("active"));
+        if(rcHoverTooltip) rcHoverTooltip.style.display = "none";
+      });
+    });
     const restoreDraftBtn = document.getElementById("restore-draft-btn");
     if(restoreDraftBtn) restoreDraftBtn.addEventListener("click", restoreColumnDraft);
     const dismissDraftBtn = document.getElementById("dismiss-draft-btn");
