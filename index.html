@@ -1529,6 +1529,12 @@ function formatAdRiskWarning(text){
   return `<div class="banner" style="background:#f8e6e4;color:var(--seal);display:block;">⚠️ 광고 규정 위반 소지 표현이 발견됐어요: ${found.map(f=>`<b>"${escapeHtml(f)}"</b>`).join(", ")} — 발행 전 표현을 다듬거나 지방변호사회 광고심사를 확인하세요.</div>`;
 }
 
+// pageId만으로도 노션은 정상적으로 페이지를 열어준다(제목-슬러그 없이 접속해도 그 페이지로 리다이렉트됨) —
+// 그래서 notionUrl을 따로 저장해두지 않아도, 저장된 notionPageId만으로 "예전에 올린 페이지 열기" 링크를 만들 수 있다.
+function notionPageUrlFromId(pageId){
+  return "https://www.notion.so/" + String(pageId || "").replace(/-/g, "");
+}
+
 function computeStructuredNote(c){
   return c.structured
     ? `구조화된 소제목·목록·강조 표시가 노션 업로드에 반영돼요.`
@@ -1538,6 +1544,12 @@ function computeStructuredNote(c){
 function renderRewrittenColumn(p){
   const c = p.rewrittenColumn;
   const structuredNote = computeStructuredNote(c);
+  // notionPageId는 있는데 이번 세션에 방금 올린 게 아니면 "예전에 이미 업로드해둔 프로젝트"다 —
+  // 이 경우 매번 새 페이지가 생기는 걸 막을 수는 없지만(노션 페이지 안전 갱신은 범위 밖,
+  // docs/tasks/column-notion-quality.md 8절 참고), 최소한 기존 페이지 열기를 기본으로 보여주고
+  // "다시 업로드"는 별도 새 페이지가 생긴다는 걸 명확히 알려서 혼란을 줄인다.
+  const alreadyUploaded = !p.notionUrl && !!p.notionPageId;
+  const existingNotionUrl = p.notionPageId ? notionPageUrlFromId(p.notionPageId) : null;
   return `
     <div class="section-title">2단계 · 재작성된 칼럼 — 내용을 확인한 뒤 노션으로 업로드하세요</div>
     <div class="card" style="padding:16px;border-left:4px solid var(--amber);">
@@ -1550,11 +1562,14 @@ function renderRewrittenColumn(p){
         ${(c.tags||[]).map(t=>`<span class="badge" style="background:#eef0f4;color:var(--ink);margin:2px 6px 2px 0;">#${t}</span>`).join("")}
       </div>
       <div style="margin-top:16px;border-top:1px solid var(--line);padding-top:14px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
-        <button class="btn amber" id="upload-notion-btn" ${p.loading.notion?"disabled":""}>${p.loading.notion?"업로드 중...":"📤 노션에 업로드"}</button>
-        ${p.notionUrl ? `<a href="${p.notionUrl}" target="_blank" rel="noopener" class="banner ok" style="margin:0;">✅ 노션 페이지 열기 ↗</a>` : ""}
+        <button class="btn ${alreadyUploaded ? "outline" : "amber"}" id="upload-notion-btn" ${p.loading.notion?"disabled":""} title="${alreadyUploaded ? "노션에 별도의 새 페이지가 하나 더 생겨요 — 기존 페이지 내용은 그대로 남아요." : ""}">${p.loading.notion?"업로드 중...":(alreadyUploaded ? "🔁 새 페이지로 다시 업로드" : "📤 노션에 업로드")}</button>
+        ${p.notionUrl
+          ? `<a href="${p.notionUrl}" target="_blank" rel="noopener" class="banner ok" style="margin:0;">✅ 노션 페이지 열기 ↗</a>`
+          : (alreadyUploaded ? `<a href="${existingNotionUrl}" target="_blank" rel="noopener" class="banner ok" style="margin:0;">✅ 이미 업로드한 노션 페이지 열기 ↗</a>` : "")}
         <button class="btn outline" id="run-reels-btn" ${p.loading.reels?"disabled":""}>${p.loading.reels?"만드는 중...":"릴스 대본도 만들기"}</button>
         <button class="btn outline" id="copy-column-btn">📋 복사</button>
       </div>
+      ${alreadyUploaded ? `<div class="section-note" style="margin-top:8px;">💡 이 프로젝트는 이미 노션에 업로드한 적이 있어요. 보통은 위 링크로 기존 페이지를 열어서 이어서 다듬는 걸 추천해요 — "다시 업로드"를 누르면 별도의 새 페이지가 하나 더 생겨요.</div>` : ""}
       ${p.notionWarning ? `<div class="banner info" style="display:block;margin-top:8px;">⚠️ ${escapeHtml(p.notionWarning)}</div>` : ""}
       <div class="section-note" style="margin-top:8px;">노션 업로드 후에는 노션 앱에서 제목·본문·이미지를 최종 수정한 뒤, 네이버 블로그 등에 직접 발행해주세요.</div>
       <div style="margin-top:14px;">
