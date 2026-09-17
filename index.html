@@ -352,7 +352,18 @@ const state = {
     notionPageId: null,           // 위 노션 페이지의 ID — "노션 내용으로 발행"이 이 값으로 페이지를 다시 읽어옴
     prettyPageUrl: null,          // 발행된 "예쁜 페이지"(/c/:slug) 주소 — 같은 프로젝트로 다시 발행하면 이 링크가 최신 내용으로 갱신됨
     publishDateStr: "",           // 발행 예정일 (선택) — 지정하고 저장하면 콘텐츠 캘린더에도 자동 등록됨
-    loading: { column:false, reels:false, notion:false, notionPublish:false },
+    // --- 레퍼런스 기반 생성 (2026-09-17, docs/tasks/reference-based-column-workflow.md) ---
+    // 레퍼런스/브리프는 생성 시점의 "입력 재료"일 뿐이라 프로젝트 저장에는 포함하지 않는다(11절).
+    references: [],               // Reference[] — {id,label,inputMode,sourceUrl,sourceText,role,weight}, 최대 MAX_REFERENCES개
+    referencesOpen: false,        // 레퍼런스 패널 펼침 여부 (세션 한정)
+    briefOpen: false,             // 브리프 패널 펼침 여부 (세션 한정)
+    brief: {
+      topic: "", audience: "", purpose: "", length: "",
+      mustInclude: "", avoid: "", extraRequest: "",
+    },
+    revisionInstruction: "",      // "AI에게 수정 지시하기" 입력창 값
+    revisionHistory: [],          // [{instruction, at}] — 지금까지 내린 수정 지시 로그(표시용, 프롬프트에는 안 씀)
+    loading: { column:false, reels:false, notion:false, notionPublish:false, revision:false },
     error: null,
   },
 
@@ -1204,6 +1215,9 @@ function renderPlanModal(){
   `;
 }
 
+// 레퍼런스는 5개까지만 — 나중에 늘리고 싶으면 이 값만 바꾸면 됨(docs/tasks/reference-based-column-workflow.md 4절)
+const MAX_REFERENCES = 5;
+
 /* ---- 초안 자동 복구: 실수로 새로고침해도 작업 중이던 칼럼 입력이 로컬(이 브라우저)에 남아있으면 복구할 수 있게 ----
    저장된 프로젝트(projectId 있음)를 편집 중일 때는 별도 초안을 만들지 않는다 (이미 서버에 저장되고 있으므로 중복 불필요) */
 const COLUMN_DRAFT_KEY = "mkt:columnDraftV1";
@@ -1245,6 +1259,82 @@ function restoreColumnDraft(){
   p.rewrittenColumn = normalizeLoadedRewrittenColumn(draft.rewrittenColumn) || null;
   clearColumnDraftFromStorage();
   render();
+}
+
+/* 레퍼런스 입력 패널 — 접혀있는 게 기본(안 쓰는 사용자는 기존 화면과 거의 동일하게 보이도록) */
+function renderReferencesPanel(p){
+  const refs = p.references;
+  const rows = refs.map((r)=>{
+    const sourceField = r.inputMode === "text"
+      ? `<textarea class="field" data-ref-field="sourceText" data-ref-id="${r.id}" style="width:100%;min-height:80px;margin-top:8px;" placeholder="레퍼런스 내용을 붙여넣으세요">${escapeHtml(r.sourceText||"")}</textarea>`
+      : `<input class="field" data-ref-field="sourceUrl" data-ref-id="${r.id}" style="width:100%;margin-top:8px;" placeholder="${r.inputMode==="youtube" ? "https://www.youtube.com/watch?v=..." : "https://..."}" value="${escapeHtml(r.sourceUrl||"")}" />`;
+    return `
+      <div class="card" style="padding:12px;margin-bottom:10px;background:#fafaf8;">
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+          <input class="field" data-ref-field="label" data-ref-id="${r.id}" style="flex:1;min-width:120px;font-weight:600;" value="${escapeHtml(r.label||"")}" />
+          <select class="field" data-ref-field="inputMode" data-ref-id="${r.id}" style="width:auto;">
+            <option value="text" ${r.inputMode==="text"?"selected":""}>텍스트</option>
+            <option value="url" ${r.inputMode==="url"?"selected":""}>URL</option>
+            <option value="youtube" ${r.inputMode==="youtube"?"selected":""}>유튜브</option>
+          </select>
+          <select class="field" data-ref-field="role" data-ref-id="${r.id}" style="width:auto;" title="이 레퍼런스를 어떤 용도로 참고할지">
+            ${Object.keys(REFERENCE_ROLE_LABELS).map(k=>`<option value="${k}" ${r.role===k?"selected":""}>${REFERENCE_ROLE_LABELS[k]}</option>`).join("")}
+          </select>
+          <select class="field" data-ref-field="weight" data-ref-id="${r.id}" style="width:auto;" title="이 레퍼런스를 얼마나 많이 반영할지">
+            ${Object.keys(REFERENCE_WEIGHT_LABELS).map(k=>`<option value="${k}" ${r.weight===k?"selected":""}>비중: ${REFERENCE_WEIGHT_LABELS[k]}</option>`).join("")}
+          </select>
+          <button class="btn outline" data-remove-ref="${r.id}" style="font-size:11px;padding:5px 8px;margin-left:auto;">삭제</button>
+        </div>
+        ${sourceField}
+      </div>
+    `;
+  }).join("");
+
+  return `
+    <div class="card" style="padding:0;margin-bottom:16px;overflow:hidden;">
+      <div id="toggle-references-panel" style="padding:14px 16px;display:flex;justify-content:space-between;align-items:center;cursor:pointer;">
+        <div style="font-weight:700;font-size:14px;">📎 레퍼런스 추가 (선택, ${refs.length}/${MAX_REFERENCES})</div>
+        <div style="font-size:12px;opacity:0.6;">${p.referencesOpen ? "접기 ▲" : "펼치기 ▼"}</div>
+      </div>
+      ${p.referencesOpen ? `
+        <div style="padding:0 16px 16px 16px;border-top:1px solid var(--line);">
+          <div class="section-note" style="margin:10px 0;">주요 원문과 함께 참고할 자료를 추가하세요 — 역할(사실 보강/구성 참고/말투 참고/예시·사례/자유 참고)과 반영 비중(낮음/보통/높음)을 지정할 수 있어요.</div>
+          ${rows}
+          ${refs.length < MAX_REFERENCES ? `<button class="btn outline" id="add-reference-btn" style="font-size:12px;padding:6px 12px;">+ 레퍼런스 추가</button>` : `<div class="section-note">최대 ${MAX_REFERENCES}개까지만 추가할 수 있어요.</div>`}
+        </div>
+      ` : ""}
+    </div>
+  `;
+}
+
+/* 칼럼 브리프(주제/대상/용도/분량/필수포인트/피할표현/추가요청) 입력 패널 — 전부 선택 사항 */
+function renderBriefPanel(p){
+  const b = p.brief;
+  return `
+    <div class="card" style="padding:0;margin-bottom:16px;overflow:hidden;">
+      <div id="toggle-brief-panel" style="padding:14px 16px;display:flex;justify-content:space-between;align-items:center;cursor:pointer;">
+        <div style="font-weight:700;font-size:14px;">🎯 칼럼 브리프 (선택)</div>
+        <div style="font-size:12px;opacity:0.6;">${p.briefOpen ? "접기 ▲" : "펼치기 ▼"}</div>
+      </div>
+      ${p.briefOpen ? `
+        <div style="padding:0 16px 16px 16px;border-top:1px solid var(--line);">
+          <div class="section-note" style="margin:10px 0;">비워두면 원문 분량과 내용에 맞춰 AI가 알아서 정해요.</div>
+          <div class="form-grid">
+            <label>최종 글의 주제<input class="field" id="brief-topic" value="${escapeHtml(b.topic||"")}" placeholder="예: 프리랜서의 개인회생 신청 조건" /></label>
+            <label>글을 읽을 대상<input class="field" id="brief-audience" value="${escapeHtml(b.audience||"")}" placeholder="예: 소득이 일정치 않은 프리랜서" /></label>
+            <label>글의 용도<input class="field" id="brief-purpose" value="${escapeHtml(b.purpose||"")}" placeholder="예: 블로그 발행용" /></label>
+            <label>글의 분량<input class="field" id="brief-length" value="${escapeHtml(b.length||"")}" placeholder="예: 1500자 내외" /></label>
+          </div>
+          <label style="display:block;margin-top:8px;font-size:11px;opacity:0.65;">반드시 포함할 포인트 (한 줄에 하나씩)</label>
+          <textarea class="field" id="brief-mustinclude" style="width:100%;min-height:60px;">${escapeHtml(b.mustInclude||"")}</textarea>
+          <label style="display:block;margin-top:8px;font-size:11px;opacity:0.65;">피해야 할 표현이나 내용 (한 줄에 하나씩)</label>
+          <textarea class="field" id="brief-avoid" style="width:100%;min-height:60px;">${escapeHtml(b.avoid||"")}</textarea>
+          <label style="display:block;margin-top:8px;font-size:11px;opacity:0.65;">추가 요청</label>
+          <textarea class="field" id="brief-extra" style="width:100%;min-height:60px;">${escapeHtml(b.extraRequest||"")}</textarea>
+        </div>
+      ` : ""}
+    </div>
+  `;
 }
 
 /* ---- 칼럼 재작성 → 카드뉴스 → 릴스대본 파이프라인 ---- */
@@ -1297,7 +1387,13 @@ function renderColumns(){
         <label style="display:block;font-size:11px;opacity:0.65;margin-bottom:4px;">원본 칼럼 텍스트</label>
         <textarea class="field" id="col-source-text" style="width:100%;min-height:140px;margin-bottom:10px;" placeholder="여기에 원본 칼럼 내용을 붙여넣으세요">${p.sourceText||""}</textarea>
       `}
-      ${p.error ? `<div class="banner" style="background:#f8e6e4;color:var(--seal);">${p.error}</div>` : ""}
+    </div>
+
+    ${renderReferencesPanel(p)}
+    ${renderBriefPanel(p)}
+
+    <div class="card" style="padding:16px;">
+      ${p.error ? `<div class="banner" style="background:#f8e6e4;color:var(--seal);margin-bottom:10px;">${p.error}</div>` : ""}
       <button class="btn amber" id="run-column-btn" ${p.loading.column?"disabled":""}>${p.loading.column?"재작성 중...":"칼럼 재작성하기"}</button>
       ${(p.rewrittenColumn||p.reelsScript) ? `<button class="btn outline" id="reset-pipeline-btn" style="margin-left:8px;">새 프로젝트 시작</button>` : ""}
       ${p.rewrittenColumn ? `
@@ -1541,6 +1637,37 @@ function computeStructuredNote(c){
     : `이 프로젝트는 평문으로 저장돼 있어서, 노션에는 문단으로만 올라가요.`;
 }
 
+/* 네이버 블로그 등에 붙여넣기 좋은 평문으로 포맷한다 — 마크다운 기호(#, **, - 등)는
+   블로그 에디터에 그대로 텍스트로 붙어버리니 쓰지 않고, 빈 줄 간격과 최소한의 기호(•, "")만
+   써서 소제목/목록/인용을 시각적으로 구분한다. structured가 없는(레거시) 프로젝트는
+   지금처럼 title+body만 이어붙인다 (docs/tasks/reference-based-column-workflow.md 10절). */
+function formatColumnForBlogCopy(c){
+  if(!c.structured){
+    return (c.title||"") + "\n\n" + (c.body||"");
+  }
+  const s = c.structured;
+  const parts = [c.title||""];
+  if(c.subtitle) parts.push(c.subtitle);
+  if(s.introduction) parts.push(s.introduction);
+  s.sections.forEach(sec=>{
+    const lines = [];
+    if(sec.heading) lines.push(sec.heading);
+    if(sec.paragraphs.length) lines.push(sec.paragraphs.join("\n\n"));
+    if(sec.quote) lines.push(`"${sec.quote}"`);
+    if(sec.bullets.length) lines.push(sec.bullets.map((b,i)=>(sec.ordered ? (i+1)+". " : "• ")+b).join("\n"));
+    if(sec.callout) lines.push(`💡 ${sec.callout}`);
+    if(lines.length) parts.push(lines.join("\n\n"));
+  });
+  if(s.conclusion) parts.push(s.conclusion);
+  if(c.keyPoints && c.keyPoints.length){
+    parts.push("핵심 포인트\n" + c.keyPoints.map(k=>"• "+k).join("\n"));
+  }
+  if(c.tags && c.tags.length){
+    parts.push(c.tags.map(t=>"#"+t).join(" "));
+  }
+  return parts.filter(Boolean).join("\n\n");
+}
+
 function renderRewrittenColumn(p){
   const c = p.rewrittenColumn;
   const structuredNote = computeStructuredNote(c);
@@ -1561,13 +1688,22 @@ function renderRewrittenColumn(p){
       <div style="margin-top:8px;">
         ${(c.tags||[]).map(t=>`<span class="badge" style="background:#eef0f4;color:var(--ink);margin:2px 6px 2px 0;">#${t}</span>`).join("")}
       </div>
+      <div style="margin-top:16px;border-top:1px solid var(--line);padding-top:14px;">
+        <label style="display:block;font-size:12px;font-weight:600;margin-bottom:6px;">✏️ AI에게 수정 지시하기</label>
+        <div class="section-note" style="margin:0 0 8px 0;">자연어로 지시하세요 — 예: "제목만 더 구체적으로 바꿔줘", "두 번째 섹션만 쉽게 설명해줘", "전체를 더 짧게 줄여줘", "광고처럼 보이는 표현을 줄여줘"</div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-start;">
+          <input class="field" id="revision-instruction-input" style="flex:1;min-width:220px;" placeholder="수정하고 싶은 내용을 입력하세요" value="${escapeHtml(p.revisionInstruction||"")}" ${p.loading.revision?"disabled":""} />
+          <button class="btn amber" id="run-revision-btn" ${p.loading.revision?"disabled":""}>${p.loading.revision?"수정 중...":"수정 요청"}</button>
+        </div>
+        ${p.revisionHistory.length ? `<div class="section-note" style="margin-top:8px;">최근 수정 지시: ${p.revisionHistory.slice(0,3).map(h=>`"${escapeHtml(h.instruction)}"`).join(" · ")}</div>` : ""}
+      </div>
       <div style="margin-top:16px;border-top:1px solid var(--line);padding-top:14px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
         <button class="btn ${alreadyUploaded ? "outline" : "amber"}" id="upload-notion-btn" ${p.loading.notion?"disabled":""} title="${alreadyUploaded ? "노션에 별도의 새 페이지가 하나 더 생겨요 — 기존 페이지 내용은 그대로 남아요." : ""}">${p.loading.notion?"업로드 중...":(alreadyUploaded ? "🔁 새 페이지로 다시 업로드" : "📤 노션에 업로드")}</button>
         ${p.notionUrl
           ? `<a href="${p.notionUrl}" target="_blank" rel="noopener" class="banner ok" style="margin:0;">✅ 노션 페이지 열기 ↗</a>`
           : (alreadyUploaded ? `<a href="${existingNotionUrl}" target="_blank" rel="noopener" class="banner ok" style="margin:0;">✅ 이미 업로드한 노션 페이지 열기 ↗</a>` : "")}
         <button class="btn outline" id="run-reels-btn" ${p.loading.reels?"disabled":""}>${p.loading.reels?"만드는 중...":"릴스 대본도 만들기"}</button>
-        <button class="btn outline" id="copy-column-btn">📋 복사</button>
+        <button class="btn outline" id="copy-column-btn">📋 블로그용 복사</button>
       </div>
       ${alreadyUploaded ? `<div class="section-note" style="margin-top:8px;">💡 이 프로젝트는 이미 노션에 업로드한 적이 있어요. 보통은 위 링크로 기존 페이지를 열어서 이어서 다듬는 걸 추천해요 — "다시 업로드"를 누르면 별도의 새 페이지가 하나 더 생겨요.</div>` : ""}
       ${p.notionWarning ? `<div class="banner info" style="display:block;margin-top:8px;">⚠️ ${escapeHtml(p.notionWarning)}</div>` : ""}
@@ -3064,6 +3200,101 @@ function buildKeyPointsAndTagsRules(){
 - tags는 3~7개, 글에서 실제로 다룬 개념만 쓰고 지나치게 넓은 태그나 홍보성 태그, 같은 뜻의 중복 태그는 빼. "#" 기호는 붙이지 마.`;
 }
 
+/* =========================================================
+   레퍼런스 기반 생성 (docs/tasks/reference-based-column-workflow.md)
+   — 주요 원문 외에 여러 레퍼런스(역할·비중 지정)와 브리프(대상/용도/분량 등)를
+   함께 프롬프트에 반영한다. 레퍼런스/브리프가 비어 있으면 관련 블록을 통째로
+   생략해서, 안 쓰는 사용자에게는 기존 프롬프트와 사실상 동일하게 유지한다.
+========================================================= */
+const REFERENCE_ROLE_LABELS = { facts: "사실 보강용", structure: "구성/흐름 참고용", tone: "말투 참고용", example: "예시·사례용", mixed: "자유 참고용" };
+const REFERENCE_WEIGHT_LABELS = { low: "낮음", medium: "보통", high: "높음" };
+
+function createEmptyReference(index){
+  return {
+    id: "ref-"+Date.now()+"-"+Math.random().toString(36).slice(2,7),
+    label: "레퍼런스 "+index,
+    inputMode: "text",
+    sourceText: "",
+    sourceUrl: "",
+    role: "mixed",
+    weight: "medium",
+  };
+}
+
+/* 레퍼런스 하나의 원문 텍스트를 확보한다 (텍스트면 그대로, URL/유튜브면 서버에서 가져옴) */
+async function resolveReferenceText(ref){
+  if(ref.inputMode === "url"){
+    if(!ref.sourceUrl.trim()) return "";
+    const res = await fetch("/api/fetch-url?url=" + encodeURIComponent(ref.sourceUrl));
+    if(res.status === 401){ redirectToLogin(); throw new Error("로그인이 필요해요."); }
+    const data = await res.json().catch(()=>({}));
+    if(!res.ok) throw new Error(`"${ref.label}" URL에서 원문을 가져오지 못했어요: ` + (data.error||""));
+    return data.text;
+  }
+  if(ref.inputMode === "youtube"){
+    if(!ref.sourceUrl.trim()) return "";
+    const res = await fetch("/api/youtube-transcript?url=" + encodeURIComponent(ref.sourceUrl));
+    if(res.status === 401){ redirectToLogin(); throw new Error("로그인이 필요해요."); }
+    const data = await res.json().catch(()=>({}));
+    if(!res.ok) throw new Error(`"${ref.label}" 유튜브 영상에서 자막을 가져오지 못했어요: ` + (data.error||""));
+    return (data.title ? `(영상 제목: ${data.title})\n\n` : "") + data.text;
+  }
+  return ref.sourceText || "";
+}
+
+/* 실제로 내용이 채워진 레퍼런스만 골라서 {label, role, weight, text}로 정리한다 */
+async function resolveActiveReferences(references){
+  const active = (references||[]).filter(r=>
+    (r.inputMode === "text" && r.sourceText && r.sourceText.trim()) ||
+    (r.inputMode !== "text" && r.sourceUrl && r.sourceUrl.trim())
+  );
+  const resolved = [];
+  for(const ref of active){
+    const text = await resolveReferenceText(ref);
+    if(text && text.trim()) resolved.push({ label: ref.label, role: ref.role, weight: ref.weight, text: text.trim() });
+  }
+  return resolved;
+}
+
+// 레퍼런스가 있을 때만 프롬프트에 넣는 "어떻게 섞을지"에 대한 일반 규칙 (레퍼런스 내용 자체는 buildReferenceContextBlock이 따로 넣음)
+function buildReferenceBlendingRules(resolvedReferences){
+  if(!resolvedReferences.length) return "";
+  return `[레퍼런스 반영 규칙]
+아래에 주요 원문과 별도로 레퍼런스 자료가 여러 개 주어져. 각 레퍼런스에는 역할과 비중이 표시돼 있어.
+- 사실이 서로 충돌하면 주요 원문을 항상 1순위 기준으로 삼아. 레퍼런스가 원문과 다른 사실을 말하면, 비중이 "높음"이어도 임의로 하나를 정답처럼 단정하지 말고, 애매하면 그 부분은 빼거나 완곡하게 표현해.
+- 비중이 "높음"인 레퍼런스는 실제 본문 분량에서 비중 있게 반영하고, "낮음"인 레퍼런스는 한두 문장 정도로 짧게만 참고해. 글 전체를 비중 낮은 레퍼런스 위주로 재구성하지 마.
+- 역할이 "구성/흐름 참고용"이거나 "말투 참고용"인 레퍼런스는 내용(사실·수치·사례)을 본문에 끌어오지 말고, 각각 글의 구성 방식이나 말투만 참고해. (말투는 사용자 글쓰기 스타일 가이드가 있으면 그게 항상 우선이고, 그 레퍼런스는 스타일 가이드가 없을 때만 참고해.)
+- 역할이 "사실 보강용"이거나 "예시·사례용"인 레퍼런스도 원문과 마찬가지로, 거기 실제로 있는 내용만 써야 해 — 없는 사실을 지어내면 안 돼.`;
+}
+
+// 레퍼런스 내용 자체를 프롬프트에 넣는 블록
+function buildReferenceContextBlock(resolvedReferences){
+  return resolvedReferences.map((r, i)=>
+    `[레퍼런스 ${i+1}: ${r.label} — 역할: ${REFERENCE_ROLE_LABELS[r.role]||r.role}, 비중: ${REFERENCE_WEIGHT_LABELS[r.weight]||r.weight}]\n${r.text}`
+  ).join("\n\n");
+}
+
+// 브리프(주제/대상/용도/분량/필수포인트/피할표현/추가요청) 중 채워진 항목만 프롬프트에 넣는다
+function buildBriefBlock(brief){
+  if(!brief) return "";
+  const lines = [];
+  if(brief.topic && brief.topic.trim()) lines.push(`- 최종 글의 주제: ${brief.topic.trim()}`);
+  if(brief.audience && brief.audience.trim()) lines.push(`- 글을 읽을 대상: ${brief.audience.trim()}`);
+  if(brief.purpose && brief.purpose.trim()) lines.push(`- 글의 용도: ${brief.purpose.trim()}`);
+  if(brief.length && brief.length.trim()) lines.push(`- 글의 분량: ${brief.length.trim()}`);
+  if(brief.mustInclude && brief.mustInclude.trim()){
+    lines.push(`- 반드시 포함할 포인트 (원문/레퍼런스에 실제로 근거가 있을 때만 반영하고, 없으면 억지로 지어내지 마):`);
+    brief.mustInclude.trim().split(/\n+/).forEach(l=> lines.push(`  · ${l.trim()}`));
+  }
+  if(brief.avoid && brief.avoid.trim()){
+    lines.push(`- 피해야 할 표현이나 내용:`);
+    brief.avoid.trim().split(/\n+/).forEach(l=> lines.push(`  · ${l.trim()}`));
+  }
+  if(brief.extraRequest && brief.extraRequest.trim()) lines.push(`- 추가 요청: ${brief.extraRequest.trim()}`);
+  if(!lines.length) return "";
+  return `[요청 사항]\n${lines.join("\n")}`;
+}
+
 /* 태그 구분자(###) 형식을 쓴다 — JSON은 자유 서술형 한국어 문단·인용부호가 섞이면
    모델이 이스케이프를 자주 틀려서 파싱이 깨진다(parseTaggedSections 주석 참고,
    이미 이 코드베이스의 릴스 대본·카드뉴스 대본 생성에서 검증된 방식). 섹션처럼
@@ -3212,23 +3443,96 @@ async function generateRewrittenColumn(){
     sourceText = (data.title ? `(영상 제목: ${data.title})\n\n` : "") + data.text;
   }
 
+  const resolvedReferences = await resolveActiveReferences(p.references);
+
   const sourceLabel = p.inputMode==="youtube" ? "영상 자막" : "칼럼";
-  const prompt = `너는 원문을 읽고 새로운 칼럼으로 재구성하는 전문 편집자야. ${persona}
-
-${buildSourceFidelityRules(p.inputMode)}
-
-${buildEditorialQualityRules()}
-
-${buildStructureRules()}
-
-${buildKeyPointsAndTagsRules()}
-
-[원본 ${sourceLabel}]
-${sourceText}
-
-${buildColumnOutputContract()}`;
+  const prompt = [
+    `너는 원문을 읽고 새로운 칼럼으로 재구성하는 전문 편집자야. ${persona}`,
+    buildSourceFidelityRules(p.inputMode),
+    buildEditorialQualityRules(),
+    buildStructureRules(),
+    buildKeyPointsAndTagsRules(),
+    buildReferenceBlendingRules(resolvedReferences),
+    buildBriefBlock(p.brief),
+    `[주요 원문 ${sourceLabel}]\n${sourceText}`,
+    buildReferenceContextBlock(resolvedReferences),
+    buildColumnOutputContract(),
+  ].filter(Boolean).join("\n\n");
   const raw = await callBackendAI(prompt, false, 6000);
   return parseStructuredColumnResponse(raw);
+}
+
+/* 현재 원고(rewrittenColumn)를 AI가 읽기 좋은 평문으로 직렬화한다 — 수정 지시
+   프롬프트에서 "지금 이 글"을 보여주는 용도라 태그/JSON이 아니라 그냥 텍스트로 만든다. */
+function serializeDraftForRevision(c){
+  const parts = [`제목: ${c.title||""}`];
+  if(c.subtitle) parts.push(`부제: ${c.subtitle}`);
+  if(c.structured){
+    if(c.structured.introduction) parts.push(`[도입]\n${c.structured.introduction}`);
+    c.structured.sections.forEach((sec, i)=>{
+      const lines = [`[섹션 ${i+1}${sec.heading ? ": "+sec.heading : ""}]`];
+      if(sec.paragraphs.length) lines.push(sec.paragraphs.join("\n\n"));
+      if(sec.bullets.length) lines.push(sec.bullets.map((b,j)=>(sec.ordered?(j+1)+". ":"- ")+b).join("\n"));
+      if(sec.quote) lines.push(`인용: "${sec.quote}"`);
+      if(sec.callout) lines.push(`강조: ${sec.callout}`);
+      parts.push(lines.join("\n"));
+    });
+    if(c.structured.conclusion) parts.push(`[결론]\n${c.structured.conclusion}`);
+  } else {
+    parts.push(`[본문]\n${c.body||""}`);
+  }
+  if(c.keyPoints && c.keyPoints.length) parts.push(`[핵심 포인트]\n${c.keyPoints.map(k=>"- "+k).join("\n")}`);
+  if(c.tags && c.tags.length) parts.push(`[태그]\n${c.tags.join(", ")}`);
+  return parts.join("\n\n");
+}
+
+// 지시가 글 전체에 적용되는 성격인지(분량/전체 말투 등) 판단해서 다른 지시를 준다 — "부분 수정 vs 전체 수정"
+function buildRevisionRules(instruction){
+  const isWholeDoc = /전체|전부|글\s*전체|다\s*(바꿔|줄여|고쳐)|모든\s*(문단|섹션)/.test(instruction);
+  return `[수정 지시 처리 규칙]
+아래 [사용자의 수정 지시]를 반영해서 위 [현재 원고]를 다시 써.
+${isWholeDoc
+  ? "- 지시가 글 전체에 적용되는 내용이야(분량 조절, 전체 말투 변경 등) — 그 방향에 맞게 전체를 다시 써도 돼."
+  : "- 지시가 특정 부분(제목, 특정 섹션, 도입부, 결론 등)만 가리키고 있어 — 그 부분만 지시대로 고치고, 지시하지 않은 나머지 섹션·문장은 지금 원고의 표현을 최대한 그대로 유지해. 새로 지어내거나 다른 표현으로 바꾸지 마."}
+- "특정 문단은 그대로 두고 나머지만 수정해줘"처럼 유지할 부분을 지시했으면, 그 부분은 정확히 그대로 유지해.
+- 이 지시를 반영하는 중에도 지금 원고에 없는 새로운 사실·수치·사례를 지어내면 안 돼 — 원문 충실성 규칙은 수정 시에도 항상 유지돼.`;
+}
+
+/* 현재 원고 + 사용자의 자연어 지시를 함께 보내서, 같은 출력 계약(태그 구분자)으로 전체
+   문서를 다시 받는다. 부분 patch가 아니라 항상 전체를 다시 생성하되, buildRevisionRules가
+   "지시 안 한 부분은 유지"를 지시한다 — 구조화 데이터의 특정 섹션만 정밀하게 골라 patch하는
+   기능은 자연어만으로 대상을 신뢰성 있게 식별하기 어려워서 이번 범위에 넣지 않았다
+   (docs/tasks/reference-based-column-workflow.md 8·14절). */
+async function applyColumnRevision(instruction){
+  const p = state.pipeline;
+  const persona = writingPersonaPrompt();
+  const prompt = [
+    `너는 이미 쓰여진 칼럼 원고를 사용자 지시에 맞춰 다듬는 전문 편집자야. ${persona}`,
+    buildEditorialQualityRules(),
+    buildRevisionRules(instruction),
+    `[현재 원고]\n${serializeDraftForRevision(p.rewrittenColumn)}`,
+    `[사용자의 수정 지시]\n${instruction}`,
+    buildColumnOutputContract(),
+  ].filter(Boolean).join("\n\n");
+  const raw = await callBackendAI(prompt, false, 6000);
+  return parseStructuredColumnResponse(raw);
+}
+
+async function runColumnRevision(){
+  const p = state.pipeline;
+  const instruction = (p.revisionInstruction||"").trim();
+  if(!p.rewrittenColumn || !instruction) return;
+  p.loading.revision = true; p.error = null; render();
+  try{
+    p.rewrittenColumn = await applyColumnRevision(instruction);
+    p.revisionHistory = [{ instruction, at: new Date().toISOString() }, ...p.revisionHistory].slice(0, 20);
+    p.revisionInstruction = "";
+    saveColumnDraftToStorage();
+  }catch(e){
+    p.error = "수정 지시를 반영하는 중 문제가 생겼어요: " + e.message;
+  }
+  p.loading.revision = false;
+  render();
 }
 
 /* 실제 카드뉴스를 만들기 전, 슬라이드별로 어떤 내용을 다룰지 먼저 간단히 구성안(대본 초안)만 짜준다.
@@ -3746,13 +4050,19 @@ async function saveColumnProject(){
   setTimeout(()=>{ state.pipeline.savedJustNow = false; render(); }, 2200);
 }
 
+function createEmptyBrief(){
+  return { topic: "", audience: "", purpose: "", length: "", mustInclude: "", avoid: "", extraRequest: "" };
+}
+
 function resetPipeline(){
   state.pipeline = {
     inputMode: state.pipeline.inputMode,
     sourceUrl: "", sourceText: "",
     projectId: null, savedJustNow: false,
     rewrittenColumn: null, reelsScript: null, notionUrl: null, notionWarning: null, notionPageId: null, prettyPageUrl: null, publishDateStr: "",
-    loading: { column:false, reels:false, notion:false, notionPublish:false },
+    references: [], referencesOpen: false, briefOpen: false, brief: createEmptyBrief(),
+    revisionInstruction: "", revisionHistory: [],
+    loading: { column:false, reels:false, notion:false, notionPublish:false, revision:false },
     error: null,
   };
   render();
@@ -3785,7 +4095,10 @@ function loadColumnProject(id){
     notionPageId: item.notionPageId || null,
     prettyPageUrl: item.prettyPageUrl || null,
     publishDateStr: (linkedPlan && linkedPlan.dateStr) || "",
-    loading: { column:false, reels:false, notion:false, notionPublish:false },
+    // 레퍼런스/브리프는 생성 시점 입력 재료일 뿐이라 프로젝트에 저장하지 않음 — 항상 빈 상태로 시작
+    references: [], referencesOpen: false, briefOpen: false, brief: createEmptyBrief(),
+    revisionInstruction: "", revisionHistory: [],
+    loading: { column:false, reels:false, notion:false, notionPublish:false, revision:false },
     error: null,
   };
   render();
@@ -4430,6 +4743,42 @@ function bindRouteEvents(){
     if(textInput) textInput.addEventListener("input", ()=>{ state.pipeline.sourceText = textInput.value; saveColumnDraftToStorage(); });
     const runColBtn = document.getElementById("run-column-btn");
     if(runColBtn) runColBtn.addEventListener("click", runColumnGeneration);
+    const toggleRefsBtn = document.getElementById("toggle-references-panel");
+    if(toggleRefsBtn) toggleRefsBtn.addEventListener("click", ()=>{ state.pipeline.referencesOpen = !state.pipeline.referencesOpen; render(); });
+    const toggleBriefBtn = document.getElementById("toggle-brief-panel");
+    if(toggleBriefBtn) toggleBriefBtn.addEventListener("click", ()=>{ state.pipeline.briefOpen = !state.pipeline.briefOpen; render(); });
+    const addRefBtn = document.getElementById("add-reference-btn");
+    if(addRefBtn) addRefBtn.addEventListener("click", ()=>{
+      const refs = state.pipeline.references;
+      if(refs.length >= MAX_REFERENCES) return;
+      refs.push(createEmptyReference(refs.length+1));
+      render();
+    });
+    document.querySelectorAll("[data-remove-ref]").forEach(btn=>{
+      btn.addEventListener("click", ()=>{
+        state.pipeline.references = state.pipeline.references.filter(r=>r.id !== btn.dataset.removeRef);
+        render();
+      });
+    });
+    document.querySelectorAll("[data-ref-field]").forEach(el=>{
+      const eventName = (el.tagName === "SELECT") ? "change" : "input";
+      el.addEventListener(eventName, ()=>{
+        const ref = state.pipeline.references.find(r=>r.id === el.dataset.refId);
+        if(!ref) return;
+        ref[el.dataset.refField] = el.value;
+        if(el.dataset.refField === "inputMode") render(); // 입력 방식이 바뀌면 텍스트/URL 필드 자체가 바뀌어야 하니 다시 그림
+      });
+    });
+    ["topic","audience","purpose","length","mustinclude","avoid","extra"].forEach(key=>{
+      const fieldMap = { mustinclude: "mustInclude", extra: "extraRequest" };
+      const stateKey = fieldMap[key] || key;
+      const el = document.getElementById("brief-"+key);
+      if(el) el.addEventListener("input", ()=>{ state.pipeline.brief[stateKey] = el.value; });
+    });
+    const revisionInput = document.getElementById("revision-instruction-input");
+    if(revisionInput) revisionInput.addEventListener("input", ()=>{ state.pipeline.revisionInstruction = revisionInput.value; });
+    const runRevisionBtn = document.getElementById("run-revision-btn");
+    if(runRevisionBtn) runRevisionBtn.addEventListener("click", runColumnRevision);
     const resetBtn = document.getElementById("reset-pipeline-btn");
     if(resetBtn) resetBtn.addEventListener("click", resetPipeline);
     const reelsBtn = document.getElementById("run-reels-btn");
@@ -4451,7 +4800,7 @@ function bindRouteEvents(){
     if(copyColumnBtn) copyColumnBtn.addEventListener("click", ()=>{
       const c = state.pipeline.rewrittenColumn;
       if(!c) return;
-      copyTextToClipboard((c.title||"")+"\n\n"+(c.body||""), copyColumnBtn);
+      copyTextToClipboard(formatColumnForBlogCopy(c), copyColumnBtn);
     });
     const copyReelsBtn = document.getElementById("copy-reels-btn");
     if(copyReelsBtn) copyReelsBtn.addEventListener("click", ()=>{
