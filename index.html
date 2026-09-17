@@ -363,6 +363,7 @@ const state = {
     },
     revisionInstruction: "",      // "AI에게 수정 지시하기" 입력창 값
     revisionHistory: [],          // [{instruction, at}] — 지금까지 내린 수정 지시 로그(표시용, 프롬프트에는 안 씀)
+    lastGenerationSources: null,  // {mainSource:{label,text}, references:[{label,text}]} — 재구성 리포트의 겹침 점검용, 프로젝트 저장에는 포함 안 함
     loading: { column:false, reels:false, notion:false, notionPublish:false, revision:false },
     error: null,
   },
@@ -1668,6 +1669,42 @@ function formatColumnForBlogCopy(c){
   return parts.filter(Boolean).join("\n\n");
 }
 
+// 겹침 점검 결과만 따로 렌더링 — 본문을 직접 고칠 때마다 이 부분만 다시 그려서 실시간으로 갱신한다
+function renderOverlapListHtml(overlaps){
+  if(!overlaps || !overlaps.length){
+    return `<div class="banner ok" style="display:block;">✅ 원문·레퍼런스와 그대로 겹치는 표현이 발견되지 않았어요.</div>`;
+  }
+  return `<div class="banner" style="display:block;background:#fdf1e2;color:var(--amber);">
+    ⚠️ 아래 표현이 원문·레퍼런스와 거의 그대로 겹쳐요 — 표절 의혹을 피하려면 다시 풀어써보는 걸 권장해요.
+    ${overlaps.map(o=>`
+      <div style="margin-top:8px;font-size:12px;">
+        <b>${escapeHtml(o.label)}</b>과(와) 겹침:
+        ${o.spans.map(s=>`<div style="margin:4px 0;padding:6px 8px;background:#fff;border-radius:6px;font-family:monospace;font-size:11px;word-break:break-all;">"${escapeHtml(s)}"</div>`).join("")}
+      </div>
+    `).join("")}
+  </div>`;
+}
+
+// "무엇이 달라졌는지"(AI 서술) + 레퍼런스 반영 내역(AI 서술) + 겹침 점검(코드로 직접 계산, AI 자기보고 아님)
+function renderRewriteReport(c){
+  const report = c.report;
+  if(!report) return "";
+  return `
+    <div style="margin-top:14px;border-top:1px solid var(--line);padding-top:14px;">
+      <div style="font-weight:700;font-size:13px;margin-bottom:8px;">🔎 원문 재구성 리포트</div>
+      ${report.changesSummary ? `<div class="section-note" style="margin:0 0 8px 0;"><b>무엇이 달라졌는지:</b> ${escapeHtml(report.changesSummary)}</div>` : ""}
+      ${(report.referenceNotes && report.referenceNotes.length) ? `
+        <div class="section-note" style="margin:0 0 8px 0;">
+          <b>레퍼런스 반영 내역:</b>
+          <ul style="margin:4px 0 0 18px;padding:0;">${report.referenceNotes.map(n=>`<li>${escapeHtml(n)}</li>`).join("")}</ul>
+        </div>
+      ` : ""}
+      <div id="rc-overlap-report">${renderOverlapListHtml(report.overlaps)}</div>
+      <div class="section-note" style="margin-top:6px;">겹침 점검은 본문을 고칠 때마다 실시간으로 다시 계산돼요. AI가 서술한 위 내용(무엇이 달라졌는지·레퍼런스 반영 내역)은 최초 생성 시점 기준이라, 그 이후 수정 지시나 직접 수정한 내용은 반영 안 될 수 있어요.</div>
+    </div>
+  `;
+}
+
 function renderRewrittenColumn(p){
   const c = p.rewrittenColumn;
   const structuredNote = computeStructuredNote(c);
@@ -1688,6 +1725,7 @@ function renderRewrittenColumn(p){
       <div style="margin-top:8px;">
         ${(c.tags||[]).map(t=>`<span class="badge" style="background:#eef0f4;color:var(--ink);margin:2px 6px 2px 0;">#${t}</span>`).join("")}
       </div>
+      ${renderRewriteReport(c)}
       <div style="margin-top:16px;border-top:1px solid var(--line);padding-top:14px;">
         <label style="display:block;font-size:12px;font-weight:600;margin-bottom:6px;">✏️ AI에게 수정 지시하기</label>
         <div class="section-note" style="margin:0 0 8px 0;">자연어로 지시하세요 — 예: "제목만 더 구체적으로 바꿔줘", "두 번째 섹션만 쉽게 설명해줘", "전체를 더 짧게 줄여줘", "광고처럼 보이는 표현을 줄여줘"</div>
@@ -3299,7 +3337,9 @@ function buildBriefBlock(brief){
    모델이 이스케이프를 자주 틀려서 파싱이 깨진다(parseTaggedSections 주석 참고,
    이미 이 코드베이스의 릴스 대본·카드뉴스 대본 생성에서 검증된 방식). 섹션처럼
    반복되는 구조는 릴스 대본의 ###SCENE### 패턴과 동일하게 ###SECTION###로 구분한다. */
-function buildColumnOutputContract(){
+// includeReport: true면 TAGS 다음에 "원문 대비 무엇이 달라졌는지" 리포트 태그를 추가로 요구한다
+// (칼럼 재작성 최초 생성 때만 씀 — 수정 지시 응답에는 원문이 다시 안 주어지므로 요구하지 않음, 8절 참고)
+function buildColumnOutputContract({ includeReport } = {}){
   return `[출력 형식]
 아래 형식을 정확히 그대로 따라서 작성해. JSON이나 마크다운 코드블록, 그 밖의 설명은 절대 붙이지 말고 이 형식만 출력해. 각 구분자(###로 시작하는 줄)는 반드시 단독으로 한 줄에 적어.
 
@@ -3335,7 +3375,11 @@ function buildColumnOutputContract(){
 ###CONCLUSION###
 (결론 문단)
 ###TAGS###
-태그1, 태그2, 태그3
+태그1, 태그2, 태그3${includeReport ? `
+###REPORT_CHANGES###
+(원문과 비교해서 이 글에서 실제로 무엇을 재구성했는지 3~5문장으로 설명해. "문장을 다듬었다" 같은 표현 수준 얘기 말고, 논지·구성·강조점이 어떻게 달라졌는지를 구체적으로 말해 — 예: "원문의 나열식 설명을 소제목 3개로 나눴다", "결론에 독자가 확인할 기준을 새로 추가했다".)
+###REPORT_REFERENCES###
+(레퍼런스가 주어졌을 때만: 레퍼런스별로 한 줄씩 "레퍼런스 N(라벨): 어디에 어떻게 반영했는지" 형식으로 적어. 레퍼런스가 없으면 이 태그는 비워두거나 통째로 생략해도 돼.)` : ""}
 ###END###
 
 callout은 문서 전체에서 정말 강조가 필요할 때만 최대 1~2개 섹션에만 쓰고, 대부분의 섹션은 CALLOUT을 비워둬.`;
@@ -3372,8 +3416,12 @@ function parseColumnSectionBlock(block){
 
 /* AI가 낸 태그 구분자 응답을 검증·보정해서 앱 내부 형태로 바꾼다. 필드 누락이나
    설명이 섞인 응답도 방어적으로 처리하고, 필수 내용(제목+본문)이 비어 있으면
-   사용자가 이해할 수 있는 한국어 에러를 던진다. */
-function parseStructuredColumnResponse(raw){
+   사용자가 이해할 수 있는 한국어 에러를 던진다.
+   opts.previousReport: 이 응답에 REPORT_CHANGES/REPORT_REFERENCES가 없으면
+   (예: 수정 지시 응답 — buildColumnOutputContract에 includeReport를 안 줌)
+   이전 원고의 리포트(최초 생성 시 만들어진 것)를 그대로 이어받는다. */
+function parseStructuredColumnResponse(raw, opts){
+  const previousReport = (opts && opts.previousReport) || null;
   const text = String(raw == null ? "" : raw);
   const hasSections = text.includes("###SECTIONS_START###") && text.includes("###SECTIONS_END###");
   const header = text.split("###SECTIONS_START###")[0];
@@ -3390,6 +3438,12 @@ function parseStructuredColumnResponse(raw){
   const keyPoints = coerceStringArray(footerFields.KEYPOINTS, /\n+/);
   const conclusion = (footerFields.CONCLUSION || "").trim();
   const tags = coerceStringArray(footerFields.TAGS, /[,\n]+/).map(t=>t.replace(/^#/, ""));
+  const reportChanges = (footerFields.REPORT_CHANGES || "").trim();
+  const reportReferenceNotes = coerceStringArray(footerFields.REPORT_REFERENCES, /\n+/);
+  // 이번 응답에 리포트 태그가 아예 없으면(수정 지시 응답) 이전 리포트를 그대로 유지 — 매 수정마다 리포트가 사라지지 않게
+  const report = (reportChanges || reportReferenceNotes.length)
+    ? { changesSummary: reportChanges, referenceNotes: reportReferenceNotes, overlaps: [] }
+    : previousReport;
 
   const sections = sectionsBlock
     .split("###SECTION###")
@@ -3421,7 +3475,77 @@ function parseStructuredColumnResponse(raw){
     title, subtitle, body: bodyParts.join("\n\n"),
     keyPoints, tags,
     structured: { introduction, sections, conclusion },
+    report, // { changesSummary, referenceNotes, overlaps } | null — overlaps는 파싱과 무관하게 항상 나중에 별도로 채워짐(아래 computeSimilarityReport)
   };
+}
+
+/* =========================================================
+   원문/레퍼런스 대비 표절·중복 표현 점검 (결정적 검사, AI 자기보고 아님)
+   — AI가 "표현을 다 바꿨다"고 말해도 실제로 안 바꿨을 수 있으니, 최종 본문과
+   원본 소스 사이에 실제로 몇 글자 이상 연속으로 겹치는 구간이 있는지 코드로
+   직접 대조한다. 공백을 뺀 문자 단위 n-gram 인덱스를 써서 형태소 분석 없이도
+   한국어에 그대로 적용 가능하게 했다.
+========================================================= */
+function normalizeForOverlap(text){
+  return String(text||"").replace(/\s+/g, "").trim();
+}
+
+// 공백을 뺀 문자열로 매칭하되, 원래 문자열의 어느 위치에서 왔는지 인덱스를 같이 남긴다
+// (매칭은 공백 무시하고 하고 싶지만, 사용자에게 보여줄 스니펫은 원래 띄어쓰기 그대로 보여주기 위함)
+function buildNormalizedWithMap(text){
+  const raw = String(text||"");
+  let normalized = "";
+  const map = [];
+  for(let i=0; i<raw.length; i++){
+    if(!/\s/.test(raw[i])){
+      normalized += raw[i];
+      map.push(i);
+    }
+  }
+  return { normalized, map };
+}
+
+function buildNgramIndex(text, n){
+  const set = new Set();
+  for(let i=0; i+n<=text.length; i++) set.add(text.slice(i, i+n));
+  return set;
+}
+
+// bodyText와 sourceText 사이에 n글자 이상 연속으로 겹치는 구간(span)을 찾아서 합친다.
+// 매칭 자체는 공백을 무시하고 하되, 반환하는 스니펫은 원문 그대로(띄어쓰기 포함)의 구간이라 읽기 편하다.
+function findOverlapSpans(bodyText, sourceText, opts){
+  const n = (opts && opts.n) || 12;
+  const minSpanLength = (opts && opts.minSpanLength) || 20;
+  const { normalized: body, map } = buildNormalizedWithMap(bodyText);
+  const source = normalizeForOverlap(sourceText);
+  if(body.length < n || source.length < n) return [];
+  const sourceNgrams = buildNgramIndex(source, n);
+  const matchedAt = new Array(body.length).fill(false);
+  for(let i=0; i+n<=body.length; i++){
+    if(sourceNgrams.has(body.slice(i, i+n))){
+      for(let k=i; k<i+n; k++) matchedAt[k] = true;
+    }
+  }
+  const spans = [];
+  let start = -1;
+  for(let i=0; i<=body.length; i++){
+    if(i < body.length && matchedAt[i]){
+      if(start === -1) start = i;
+    } else if(start !== -1){
+      const len = i - start;
+      if(len >= minSpanLength) spans.push(String(bodyText).slice(map[start], map[i-1]+1).trim());
+      start = -1;
+    }
+  }
+  return spans;
+}
+
+// sources: [{label, text}] (주요 원문 + 레퍼런스). 라벨별로 겹치는 구간이 있으면 상위 몇 개만 추림
+function computeSimilarityReport(bodyText, sources){
+  if(!bodyText || !Array.isArray(sources)) return [];
+  return sources
+    .map(src => ({ label: src.label, spans: findOverlapSpans(bodyText, src.text).slice(0, 5) }))
+    .filter(r => r.spans.length);
 }
 
 async function generateRewrittenColumn(){
@@ -3456,10 +3580,26 @@ async function generateRewrittenColumn(){
     buildBriefBlock(p.brief),
     `[주요 원문 ${sourceLabel}]\n${sourceText}`,
     buildReferenceContextBlock(resolvedReferences),
-    buildColumnOutputContract(),
+    buildColumnOutputContract({ includeReport: true }),
   ].filter(Boolean).join("\n\n");
   const raw = await callBackendAI(prompt, false, 6000);
-  return parseStructuredColumnResponse(raw);
+  const result = parseStructuredColumnResponse(raw);
+
+  // 재구성 리포트(표절/중복 점검)가 최신 원문·레퍼런스를 기준으로 계산되도록, 이번에
+  // 실제로 사용한 소스를 남겨둔다 — 프로젝트 저장에는 포함하지 않음(입력 재료일 뿐).
+  p.lastGenerationSources = {
+    mainSource: { label: "주요 원문", text: sourceText },
+    references: resolvedReferences.map(r => ({ label: r.label, text: r.text })),
+  };
+  if(result.report) result.report.overlaps = computeOverlapsForDraft(result.body, p.lastGenerationSources);
+  return result;
+}
+
+// rewrittenColumn.report.overlaps를 lastGenerationSources 기준으로 (다시) 계산한다
+function computeOverlapsForDraft(bodyText, lastGenerationSources){
+  if(!lastGenerationSources) return [];
+  const sources = [lastGenerationSources.mainSource, ...lastGenerationSources.references].filter(Boolean);
+  return computeSimilarityReport(bodyText, sources);
 }
 
 /* 현재 원고(rewrittenColumn)를 AI가 읽기 좋은 평문으로 직렬화한다 — 수정 지시
@@ -3515,7 +3655,12 @@ async function applyColumnRevision(instruction){
     buildColumnOutputContract(),
   ].filter(Boolean).join("\n\n");
   const raw = await callBackendAI(prompt, false, 6000);
-  return parseStructuredColumnResponse(raw);
+  // 수정 지시 응답에는 REPORT_CHANGES/REPORT_REFERENCES가 없으므로(buildColumnOutputContract에
+  // includeReport를 안 줌) 이전 리포트(최초 생성 시 만든 것)를 이어받는다 — AI 서술 부분은
+  // 그대로 유지하고, 겹침 점검(overlaps)만 이번 수정된 본문 기준으로 새로 계산한다.
+  const result = parseStructuredColumnResponse(raw, { previousReport: p.rewrittenColumn.report || null });
+  if(result.report) result.report.overlaps = computeOverlapsForDraft(result.body, p.lastGenerationSources);
+  return result;
 }
 
 async function runColumnRevision(){
@@ -4061,14 +4206,14 @@ function resetPipeline(){
     projectId: null, savedJustNow: false,
     rewrittenColumn: null, reelsScript: null, notionUrl: null, notionWarning: null, notionPageId: null, prettyPageUrl: null, publishDateStr: "",
     references: [], referencesOpen: false, briefOpen: false, brief: createEmptyBrief(),
-    revisionInstruction: "", revisionHistory: [],
+    revisionInstruction: "", revisionHistory: [], lastGenerationSources: null,
     loading: { column:false, reels:false, notion:false, notionPublish:false, revision:false },
     error: null,
   };
   render();
 }
 
-// 저장된 프로젝트(레거시 포함)를 불러올 때 신규 필드(subtitle/structured)가 없어도 정상 동작하도록 기본값을 채운다
+// 저장된 프로젝트(레거시 포함)를 불러올 때 신규 필드(subtitle/structured/report)가 없어도 정상 동작하도록 기본값을 채운다
 function normalizeLoadedRewrittenColumn(c){
   if(!c) return c;
   return {
@@ -4077,6 +4222,7 @@ function normalizeLoadedRewrittenColumn(c){
     keyPoints: Array.isArray(c.keyPoints) ? c.keyPoints : [],
     tags: Array.isArray(c.tags) ? c.tags : [],
     structured: c.structured || null, // 예전에 저장된 프로젝트는 항상 null → 노션 업로드 시 평문 경로로 자동 폴백
+    report: c.report || null, // 예전에 저장된 프로젝트는 항상 null → 재구성 리포트 섹션 자체를 안 보여줌
   };
 }
 
@@ -4097,7 +4243,7 @@ function loadColumnProject(id){
     publishDateStr: (linkedPlan && linkedPlan.dateStr) || "",
     // 레퍼런스/브리프는 생성 시점 입력 재료일 뿐이라 프로젝트에 저장하지 않음 — 항상 빈 상태로 시작
     references: [], referencesOpen: false, briefOpen: false, brief: createEmptyBrief(),
-    revisionInstruction: "", revisionHistory: [],
+    revisionInstruction: "", revisionHistory: [], lastGenerationSources: null,
     loading: { column:false, reels:false, notion:false, notionPublish:false, revision:false },
     error: null,
   };
@@ -4795,6 +4941,14 @@ function bindRouteEvents(){
       if(rcCharcountEl) rcCharcountEl.innerHTML = `${formatCharCountNote(rcBodyTextarea.value)} · ${computeStructuredNote(rc)} 본문을 여기서 고치면 다음 노션 업로드는 평문으로 올라가요 — 소제목·목록을 살리고 싶으면 노션에서 직접 다듬어주세요.`;
       const rcAdRiskEl = document.getElementById("rc-ad-risk-warning");
       if(rcAdRiskEl) rcAdRiskEl.innerHTML = formatAdRiskWarning(rcBodyTextarea.value);
+      // 본문을 직접 고칠 때도 겹침 점검(표절 위험)은 실시간으로 다시 계산 — 붙여넣기로 원문을 그대로 가져온 경우를 바로 잡아내기 위함.
+      // lastGenerationSources가 없으면(예: 저장된 프로젝트를 다시 불러온 세션이라 원문을 다시 안 가져온 경우)
+      // "겹침 없음"으로 잘못 안심시키지 않도록, 예전에 계산해둔 결과를 그대로 두고 새로 덮어쓰지 않는다.
+      if(rc.report && state.pipeline.lastGenerationSources){
+        rc.report.overlaps = computeOverlapsForDraft(rcBodyTextarea.value, state.pipeline.lastGenerationSources);
+        const overlapEl = document.getElementById("rc-overlap-report");
+        if(overlapEl) overlapEl.innerHTML = renderOverlapListHtml(rc.report.overlaps);
+      }
     });
     const copyColumnBtn = document.getElementById("copy-column-btn");
     if(copyColumnBtn) copyColumnBtn.addEventListener("click", ()=>{
