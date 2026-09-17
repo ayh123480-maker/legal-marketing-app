@@ -77,37 +77,70 @@
 
 ## 4. 출력 데이터 구조
 
-AI에게 아래 JSON 스키마로만 응답하게 하고(코드블록/설명 금지 지시 + 파싱 시
-코드블록·설명이 붙어도 견고하게 처리), 코드가 검증 후 내부 구조로 변환한다.
+**2026-09-17 수정: AI 출력 와이어 포맷을 JSON에서 태그 구분자(###)로 바꿈.**
+처음에는 AI에게 JSON 객체로 응답하게 했는데, 실제 운영 환경에서 원문에 큰따옴표·
+작은따옴표가 섞인 한국어 문장을 모델이 JSON 문자열로 이스케이프하는 과정에서
+자주 깨져서 "AI 응답을 구조화된 칼럼 형식으로 읽지 못했어요" 에러가 실제로
+발생했다. 이 코드베이스에 이미 있던 `parseTaggedSections`의 주석에 "JSON은
+자유 서술형 한국어 텍스트를 넣으면 이스케이프 문제로 자주 깨짐"이라고 정확히
+같은 이유가 적혀 있었는데(릴스 대본·카드뉴스 대본 생성이 그래서 태그 구분자를
+씀), 처음 구현할 때 이 교훈을 반영하지 못했다. 그래서 릴스 대본 생성이 이미
+쓰고 있는 `###SCENE###` 반복 패턴과 동일한 방식으로, 섹션은 `###SECTION###`
+구분자로 반복하는 태그 형식으로 바꿨다 — 내부적으로 만들어내는 `structured`
+객체의 모양(title/subtitle/introduction/sections[]/keyPoints/conclusion/tags,
+sections[]는 heading/paragraphs/bullets/ordered/callout/quote)은 그대로다.
 
-```json
-{
-  "title": "string",
-  "subtitle": "string (없으면 빈 문자열)",
-  "introduction": "string (문단 여러 개면 \\n\\n로 구분)",
-  "sections": [
-    {
-      "heading": "string",
-      "paragraphs": ["string", "..."],
-      "bullets": ["string", "..."],
-      "callout": "string (없으면 필드 생략 가능)"
-    }
-  ],
-  "keyPoints": ["string x 3~5"],
-  "conclusion": "string",
-  "tags": ["string x 3~7"]
-}
+AI 응답 형식(`buildColumnOutputContract`, index.html):
+
+```
+###TITLE###
+(칼럼 제목)
+###SUBTITLE###
+(부제, 없으면 빈 줄)
+###INTRODUCTION###
+(도입 문단, 여러 개면 빈 줄로 구분)
+###SECTIONS_START###
+###SECTION###
+###HEADING###
+(소제목)
+###PARAGRAPHS###
+(문단1)
+
+(문단2)
+###BULLETS###
+(목록 — 필요 없으면 태그째로 생략 가능)
+###ORDERED###
+(true/false — bullets가 순서가 의미 있는 절차일 때만 true)
+###CALLOUT###
+(강조할 내용 — 없으면 빈 줄)
+###QUOTE###
+(원문 실제 인용 — 없으면 빈 줄)
+###SECTION###
+(다음 섹션 반복 — 2~5개)
+###SECTIONS_END###
+###KEYPOINTS###
+(핵심 포인트, 한 줄에 하나씩)
+###CONCLUSION###
+(결론)
+###TAGS###
+(태그, 쉼표로 구분)
+###END###
 ```
 
-파싱 방어 처리(`parseStructuredColumnJSON`, index.html):
-- 코드블록(```json ... ``` 또는 ``` ... ```)이 앞뒤에 붙어도 안쪽 JSON만 추출.
-- 앞뒤에 설명 문장이 붙어도 균형 괄호 매칭으로 최상위 `{...}` 객체만 추출
-  (기존 `extractJSONBlock`의 `indexOf("{")~lastIndexOf("}")`보다 안전).
-- 필드 누락 시 기본값(빈 문자열/빈 배열)으로 채움.
-- 배열 기대 필드(`sections[].paragraphs`, `sections[].bullets`, `keyPoints`,
-  `tags`)에 문자열이 오면 줄바꿈/쉼표 기준으로 배열화.
-- JSON.parse 실패 시 사용자에게 "AI 응답을 표준 형식으로 읽지 못했어요. 다시
-  시도해주세요." 같은 한국어 에러를 던짐 (원문 노출 없이 재시도 유도).
+파싱 방어 처리(`parseStructuredColumnResponse` + `parseColumnSectionBlock`,
+index.html — 둘 다 기존 `parseTaggedSections`를 그대로 재사용):
+- 앞뒤에 설명 문장이 붙어도(`###TITLE###`부터 시작하지 않아도) 각 구간을
+  `###SECTIONS_START###`/`###SECTIONS_END###` 기준으로 나눠서 그 안에서만
+  태그를 찾으므로 문제없음.
+- `###SECTIONS_START###`/`###SECTIONS_END###` 마커 자체가 통째로 빠지면
+  섹션은 비워두고(빈 배열) title/introduction/keyPoints/conclusion/tags는
+  최대한 살려서 반환 — 완전 실패 대신 부분 성공.
+- BULLETS/CALLOUT/QUOTE처럼 필요 없는 태그를 통째로 생략해도(빈 값으로
+  두는 게 아니라 태그 자체가 없어도) 기본값으로 정상 처리.
+- 배열 기대 필드(`keyPoints`, `tags`, `bullets`)는 줄바꿈/쉼표 기준으로 배열화.
+- title도 본문(introduction/sections/conclusion)도 전혀 못 읽으면 "AI
+  응답에서 제목이나 본문 내용을 읽지 못했어요. 다시 시도해주세요." 한국어
+  에러를 던짐 (원문 노출 없이 재시도 유도).
 
 `state.pipeline.rewrittenColumn`에는 기존 필드(`title`, `body`, `keyPoints`,
 `tags`)를 그대로 유지하고, 신규 필드를 추가한다:
@@ -206,14 +239,15 @@ AI에게 아래 JSON 스키마로만 응답하게 하고(코드블록/설명 금
 - `node --check`: 변경한 `api/notion.js`, `lib/*.js`.
 - `index.html` 인라인 `<script>` 추출 후 `node --check`.
 - `git diff --check` (트레일링 공백 등).
-- 신규 파서(`parseStructuredColumnJSON`에 대응하는 로직)를 Node 스크립트로 직접
-  호출해 아래 케이스를 모의 입력으로 검증:
-  - 정상 JSON
-  - 코드블록으로 감싼 JSON
-  - 앞뒤에 설명 문장이 붙은 JSON
-  - 필드 누락(`subtitle`, `sections[].bullets` 없음)
-  - 배열 대신 문자열(`tags`가 "a, b, c" 문자열)
-  - 완전히 깨진 JSON(파싱 실패) → 한국어 에러 확인
+- `parseStructuredColumnResponse` + `parseColumnSectionBlock`을 Node 스크립트로
+  직접 호출해 아래 케이스를 모의 입력으로 검증:
+  - 정상 태그 응답 (따옴표·작은따옴표가 섞인 실제 한국어 문장 포함 — 예전 JSON
+    방식이 깨졌던 바로 그 케이스)
+  - 앞뒤에 설명 문장이 붙은 응답
+  - `###SECTIONS_START###`/`###SECTIONS_END###` 마커 자체가 빠진 응답 (부분 성공 확인)
+  - 선택 태그(`BULLETS`/`CALLOUT`/`QUOTE`) 통째로 생략
+  - 완전히 깨진 응답(태그 없음) → 한국어 에러 확인
+  - `ordered: true`인 섹션 → 본문에 번호 목록으로 반영되는지 확인
 - `api/notion.js`의 블록 생성 로직을 Node 스크립트로 직접 호출(fetch는
   스텁으로 대체)해서 100개 초과 블록일 때 추가 요청이 몇 번 나가는지 확인.
 - 짧은 원문/긴 원문/URL 원문/유튜브 자막/정보량 적은 원문/수치·조건 많은 원문/

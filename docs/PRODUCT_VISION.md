@@ -49,10 +49,11 @@ Notion 업로드가 이 파이프라인의 **기본 CTA**다. "예쁜 공개 페
 
 ## 출력 데이터 구조
 
-`title / subtitle / introduction / sections[heading, paragraphs, bullets?, callout?]
+`title / subtitle / introduction / sections[heading, paragraphs, bullets?, ordered?, callout?, quote?]
 / keyPoints / conclusion / tags` — 자세한 스키마와 파싱 방어 처리는
-`docs/tasks/column-notion-quality.md` 4절 참고. AI는 이 구조를 표현하는 단순한
-JSON만 출력하고, BlockNote 내부 포맷이나 Notion API 원본 JSON을 직접 만들지
+`docs/tasks/column-notion-quality.md` 4절 참고. AI는 이 구조를 태그 구분자
+(###) 형식으로만 출력하고(JSON은 한국어 자유 서술문에서 이스케이프가 자주
+깨져서 쓰지 않음), BlockNote 내부 포맷이나 Notion API 원본 JSON을 직접 만들지
 않는다 — 코드가 검증 후 변환한다.
 
 ## 로드맵과의 관계
