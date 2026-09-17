@@ -364,6 +364,7 @@ const state = {
     revisionInstruction: "",      // "AI에게 수정 지시하기" 입력창 값
     revisionHistory: [],          // [{instruction, at}] — 지금까지 내린 수정 지시 로그(표시용, 프롬프트에는 안 씀)
     lastGenerationSources: null,  // {mainSource:{label,text}, references:[{label,text}]} — 재구성 리포트의 겹침 점검용, 프로젝트 저장에는 포함 안 함
+    compareViewOpen: false,       // 비교 화면(큰 모달) 펼침 여부 — 세션 한정, 저장 안 함
     loading: { column:false, reels:false, notion:false, notionPublish:false, revision:false },
     error: null,
   },
@@ -855,10 +856,17 @@ function render(){
   // 컨트롤을 조작하는 동안 스크롤 위치가 맨 위로 튕겨 올라가는 문제가 있었다. 다시 그리기 전후로
   // 스크롤 위치를 그대로 복원해서 고친다.
   const scrollBefore = document.scrollingElement ? document.scrollingElement.scrollTop : (document.documentElement.scrollTop || document.body.scrollTop);
-  // 카드 확대 편집 모달의 오른쪽 패널(#card-editor-panel)은 자체적으로 스크롤되는 영역이라
-  // 문서 스크롤과 별개로 위치를 기억해줘야 한다 (배경 투명도 슬라이더가 그 안에 있음).
-  const panelBefore = document.getElementById("card-editor-panel");
-  const panelScrollBefore = panelBefore ? panelBefore.scrollTop : null;
+  // 문서 스크롤과 별개로 자체 스크롤되는 영역들(카드 확대 편집 모달의 오른쪽 패널,
+  // 칼럼 비교 화면의 소스/본문 패널·바깥 모달박스)은 여기서 위치를 따로 기억해뒀다가
+  // 다시 그린 뒤 복원해야 한다 — 안 그러면 render()가 통째로 다시 그릴 때마다 스크롤이
+  // 맨 위로 튕긴다(2026-09-10에 겪은 버그, CLAUDE.md 참고). 새 스크롤 영역을 추가하면
+  // 이 목록에도 id를 추가할 것.
+  const SCROLLABLE_PANEL_IDS = ["card-editor-panel", "compare-view-box", "compare-sources-panel", "compare-column-panel"];
+  const panelScrollBefore = {};
+  SCROLLABLE_PANEL_IDS.forEach(id=>{
+    const el = document.getElementById(id);
+    panelScrollBefore[id] = el ? el.scrollTop : null;
+  });
   app.innerHTML = `
     <div id="sidebar">
       <div class="brand">
@@ -902,10 +910,11 @@ function render(){
   bindRouteEvents();
   if(document.scrollingElement) document.scrollingElement.scrollTop = scrollBefore;
   else { document.documentElement.scrollTop = scrollBefore; document.body.scrollTop = scrollBefore; }
-  if(panelScrollBefore != null){
-    const panelAfter = document.getElementById("card-editor-panel");
-    if(panelAfter) panelAfter.scrollTop = panelScrollBefore;
-  }
+  SCROLLABLE_PANEL_IDS.forEach(id=>{
+    if(panelScrollBefore[id] == null) return;
+    const el = document.getElementById(id);
+    if(el) el.scrollTop = panelScrollBefore[id];
+  });
 }
 
 function topbarContent(){
@@ -1287,6 +1296,7 @@ function renderReferencesPanel(p){
           <button class="btn outline" data-remove-ref="${r.id}" style="font-size:11px;padding:5px 8px;margin-left:auto;">삭제</button>
         </div>
         ${sourceField}
+        <input class="field" data-ref-field="usageNote" data-ref-id="${r.id}" style="width:100%;margin-top:8px;font-size:12px;" placeholder="이 레퍼런스를 구체적으로 어떻게 활용할지(선택) — 예: &quot;이 통계만 인용해줘&quot;, &quot;이 사례를 예시로 그대로 써줘&quot;" value="${escapeHtml(r.usageNote||"")}" />
       </div>
     `;
   }).join("");
@@ -1299,7 +1309,7 @@ function renderReferencesPanel(p){
       </div>
       ${p.referencesOpen ? `
         <div style="padding:0 16px 16px 16px;border-top:1px solid var(--line);">
-          <div class="section-note" style="margin:10px 0;">주요 원문과 함께 참고할 자료를 추가하세요 — 역할(사실 보강/구성 참고/말투 참고/예시·사례/자유 참고)과 반영 비중(낮음/보통/높음)을 지정할 수 있어요.</div>
+          <div class="section-note" style="margin:10px 0;">레퍼런스는 단순 참고자료가 아니라 주요 원문과 함께 글을 만드는 소재예요 — 역할(사실 보강/구성 참고/말투 참고/예시·사례/자유 참고), 반영 비중(낮음/보통/높음), 그리고 구체적인 활용 지침을 지정할 수 있어요.</div>
           ${rows}
           ${refs.length < MAX_REFERENCES ? `<button class="btn outline" id="add-reference-btn" style="font-size:12px;padding:6px 12px;">+ 레퍼런스 추가</button>` : `<div class="section-note">최대 ${MAX_REFERENCES}개까지만 추가할 수 있어요.</div>`}
         </div>
@@ -1404,7 +1414,7 @@ function renderColumns(){
       ` : ""}
     </div>
 
-    ${p.rewrittenColumn ? renderRewrittenColumn(p) : ""}
+    ${p.rewrittenColumn ? (p.compareViewOpen ? renderColumnCompareView(p) : renderRewrittenColumn(p)) : ""}
     ${p.reelsScript ? renderReelsScriptBlock(p) : ""}
 
     <div class="section-title">저장된 프로젝트</div>
@@ -1686,6 +1696,23 @@ function renderOverlapListHtml(overlaps){
 }
 
 // "무엇이 달라졌는지"(AI 서술) + 레퍼런스 반영 내역(AI 서술) + 겹침 점검(코드로 직접 계산, AI 자기보고 아님)
+// AI 근거 검토(할루시네이션 점검) 결과만 따로 렌더링 — 비동기로 나중에 완료되면 이 부분만 갱신됨
+function renderGroundingCheckHtml(report){
+  if(report.groundingStatus === "checking"){
+    return `<div class="section-note">🔬 AI가 원문·레퍼런스에 없는 내용이 섞였는지 검토하고 있어요...</div>`;
+  }
+  if(report.groundingStatus === "done"){
+    if(report.groundingIssues && report.groundingIssues.length){
+      return `<div class="banner" style="display:block;background:#f8e6e4;color:var(--seal);">
+        ❗ 아래 내용은 원문·레퍼런스에서 근거를 찾지 못했어요 — 사실인지 직접 확인해보세요.
+        <ul style="margin:6px 0 0 18px;padding:0;">${report.groundingIssues.map(g=>`<li>${escapeHtml(g)}</li>`).join("")}</ul>
+      </div>`;
+    }
+    return `<div class="banner ok" style="display:block;">✅ AI 검토 결과, 근거 없는 내용을 찾지 못했어요.</div>`;
+  }
+  return "";
+}
+
 function renderRewriteReport(c){
   const report = c.report;
   if(!report) return "";
@@ -1699,14 +1726,21 @@ function renderRewriteReport(c){
           <ul style="margin:4px 0 0 18px;padding:0;">${report.referenceNotes.map(n=>`<li>${escapeHtml(n)}</li>`).join("")}</ul>
         </div>
       ` : ""}
+      <div style="font-size:11px;font-weight:700;opacity:0.6;margin:10px 0 4px 0;">겹치는 표현 점검 (결정적 검사)</div>
       <div id="rc-overlap-report">${renderOverlapListHtml(report.overlaps)}</div>
-      <div class="section-note" style="margin-top:6px;">겹침 점검은 본문을 고칠 때마다 실시간으로 다시 계산돼요. AI가 서술한 위 내용(무엇이 달라졌는지·레퍼런스 반영 내역)은 최초 생성 시점 기준이라, 그 이후 수정 지시나 직접 수정한 내용은 반영 안 될 수 있어요.</div>
+      <div style="font-size:11px;font-weight:700;opacity:0.6;margin:10px 0 4px 0;">근거 없는 내용 점검 (AI 검토, 참고용)</div>
+      <div id="rc-grounding-report">${renderGroundingCheckHtml(report)}</div>
+      <div class="section-note" style="margin-top:6px;">겹침 점검은 본문을 고칠 때마다 실시간으로 다시 계산돼요. AI가 서술한 "무엇이 달라졌는지·레퍼런스 반영 내역"과 "근거 없는 내용 점검"은 최초 생성(또는 마지막 수정 지시) 시점 기준이에요 — 100% 정확하다고 보장하지는 않으니 참고용으로만 써주세요.</div>
     </div>
   `;
 }
 
-function renderRewrittenColumn(p){
-  const c = p.rewrittenColumn;
+/* 제목/본문/태그/리포트/수정지시/업로드 버튼 등 "핵심 편집 내용" — 작은 카드 뷰와
+   비교 화면(큰 모달) 양쪽에서 공유해서 쓴다. 두 뷰는 항상 배타적으로 렌더링되므로
+   (compareViewOpen 여부에 따라 renderColumns()가 둘 중 하나만 그림) id를 그대로
+   재사용해도 중복되지 않는다. */
+function renderColumnEditorFields(p, c, opts){
+  const includeReport = !opts || opts.includeReport !== false;
   const structuredNote = computeStructuredNote(c);
   // notionPageId는 있는데 이번 세션에 방금 올린 게 아니면 "예전에 이미 업로드해둔 프로젝트"다 —
   // 이 경우 매번 새 페이지가 생기는 걸 막을 수는 없지만(노션 페이지 안전 갱신은 범위 밖,
@@ -1715,8 +1749,6 @@ function renderRewrittenColumn(p){
   const alreadyUploaded = !p.notionUrl && !!p.notionPageId;
   const existingNotionUrl = p.notionPageId ? notionPageUrlFromId(p.notionPageId) : null;
   return `
-    <div class="section-title">2단계 · 재작성된 칼럼 — 내용을 확인한 뒤 노션으로 업로드하세요</div>
-    <div class="card" style="padding:16px;border-left:4px solid var(--amber);">
       <input class="field serif" id="rc-title-input" style="width:100%;font-weight:700;font-size:16px;margin-bottom:8px;" value="${escapeHtml(c.title||"")}" />
       ${c.subtitle ? `<div class="section-note" style="margin:0 0 8px 0;font-style:italic;">${escapeHtml(c.subtitle)}</div>` : ""}
       <textarea class="field" id="rc-body-textarea" style="width:100%;min-height:240px;font-size:13px;line-height:1.7;">${escapeHtml(c.body||"")}</textarea>
@@ -1725,7 +1757,7 @@ function renderRewrittenColumn(p){
       <div style="margin-top:8px;">
         ${(c.tags||[]).map(t=>`<span class="badge" style="background:#eef0f4;color:var(--ink);margin:2px 6px 2px 0;">#${t}</span>`).join("")}
       </div>
-      ${renderRewriteReport(c)}
+      ${includeReport ? renderRewriteReport(c) : ""}
       <div style="margin-top:16px;border-top:1px solid var(--line);padding-top:14px;">
         <label style="display:block;font-size:12px;font-weight:600;margin-bottom:6px;">✏️ AI에게 수정 지시하기</label>
         <div class="section-note" style="margin:0 0 8px 0;">자연어로 지시하세요 — 예: "제목만 더 구체적으로 바꿔줘", "두 번째 섹션만 쉽게 설명해줘", "전체를 더 짧게 줄여줘", "광고처럼 보이는 표현을 줄여줘"</div>
@@ -1757,6 +1789,70 @@ function renderRewrittenColumn(p){
             </div>
           </div>
         ` : ""}
+      </div>
+  `;
+}
+
+function renderRewrittenColumn(p){
+  const c = p.rewrittenColumn;
+  return `
+    <div class="section-title" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
+      <span>2단계 · 재작성된 칼럼 — 내용을 확인한 뒤 노션으로 업로드하세요</span>
+      <button class="btn outline" id="open-compare-view-btn" style="font-size:12px;padding:6px 10px;">🔍 비교 화면으로 크게 보기</button>
+    </div>
+    <div class="card" style="padding:16px;border-left:4px solid var(--amber);">
+      ${renderColumnEditorFields(p, c)}
+    </div>
+  `;
+}
+
+/* 비교 화면(큰 모달) — 왼쪽엔 소스(주요 원문 + 레퍼런스), 오른쪽엔 재작성된 칼럼을 나란히 두고,
+   그 아래(스크롤하면 나오는 영역)에 재구성 리포트를 보여준다. renderColumnEditorFields를 그대로
+   재사용해서 편집·업로드·수정지시 기능은 작은 뷰와 동일하게 동작한다. */
+function renderColumnCompareView(p){
+  const c = p.rewrittenColumn;
+  const sources = p.lastGenerationSources;
+  const roleLabel = (role) => REFERENCE_ROLE_LABELS[role] || role;
+  const weightLabel = (weight) => REFERENCE_WEIGHT_LABELS[weight] || weight;
+
+  const sourcesPanel = !sources ? `
+    <div class="section-note">이 세션에서 생성한 원문 기록이 없어요 (저장된 프로젝트를 다시 불러왔거나, 페이지를 새로고침했을 수 있어요). 소스 원문을 보려면 새로 생성해주세요.</div>
+  ` : `
+    <div style="margin-bottom:16px;">
+      <div style="font-size:12px;font-weight:700;opacity:0.7;margin-bottom:6px;">📌 ${escapeHtml(sources.mainSource.label)}</div>
+      <div style="font-size:12px;line-height:1.7;white-space:pre-wrap;">${escapeHtml(sources.mainSource.text)}</div>
+    </div>
+    ${sources.references.map((r)=>{
+      return `
+        <div style="margin-bottom:16px;border-top:1px solid var(--line);padding-top:12px;">
+          <div style="font-size:12px;font-weight:700;opacity:0.7;margin-bottom:6px;">📎 ${escapeHtml(r.label)}${r.role ? ` · ${escapeHtml(roleLabel(r.role))}` : ""}${r.weight ? ` · 비중 ${escapeHtml(weightLabel(r.weight))}` : ""}</div>
+          ${r.usageNote ? `<div style="font-size:11px;opacity:0.6;margin-bottom:6px;">활용 지침: ${escapeHtml(r.usageNote)}</div>` : ""}
+          <div style="font-size:12px;line-height:1.7;white-space:pre-wrap;">${escapeHtml(r.text)}</div>
+        </div>
+      `;
+    }).join("")}
+  `;
+
+  return `
+    <div class="modal-backdrop" id="compare-view-backdrop" style="align-items:stretch;justify-content:stretch;padding:16px;z-index:150;">
+      <div class="modal-box" id="compare-view-box" style="width:100%;max-width:1400px;height:100%;margin:0 auto;display:flex;flex-direction:column;overflow:auto;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-shrink:0;">
+          <div style="font-weight:700;font-size:15px;">🔍 재작성된 칼럼 비교 보기</div>
+          <button class="btn outline" id="close-compare-view-btn">✕ 닫기</button>
+        </div>
+        <div style="display:flex;gap:16px;flex-wrap:wrap;">
+          <div id="compare-sources-panel" style="flex:1;min-width:320px;max-height:65vh;overflow:auto;border:1px solid var(--line);border-radius:8px;padding:14px;">
+            <div style="font-weight:700;font-size:13px;margin-bottom:10px;">📄 소스 자료</div>
+            ${sourcesPanel}
+          </div>
+          <div id="compare-column-panel" style="flex:1;min-width:320px;max-height:65vh;overflow:auto;border:1px solid var(--line);border-radius:8px;padding:14px;">
+            <div style="font-weight:700;font-size:13px;margin-bottom:10px;">✍️ 재작성된 칼럼</div>
+            ${renderColumnEditorFields(p, c, { includeReport: false })}
+          </div>
+        </div>
+        <div style="margin-top:16px;flex-shrink:0;">
+          ${renderRewriteReport(c)}
+        </div>
       </div>
     </div>
   `;
@@ -3256,6 +3352,7 @@ function createEmptyReference(index){
     sourceUrl: "",
     role: "mixed",
     weight: "medium",
+    usageNote: "", // 이 레퍼런스를 구체적으로 어떻게 활용할지(예: "이 통계만 인용", "이 사례를 예시로") — 단순 참고가 아니라 소재로 쓰고 싶을 때
   };
 }
 
@@ -3289,7 +3386,7 @@ async function resolveActiveReferences(references){
   const resolved = [];
   for(const ref of active){
     const text = await resolveReferenceText(ref);
-    if(text && text.trim()) resolved.push({ label: ref.label, role: ref.role, weight: ref.weight, text: text.trim() });
+    if(text && text.trim()) resolved.push({ label: ref.label, role: ref.role, weight: ref.weight, usageNote: (ref.usageNote||"").trim(), text: text.trim() });
   }
   return resolved;
 }
@@ -3298,17 +3395,18 @@ async function resolveActiveReferences(references){
 function buildReferenceBlendingRules(resolvedReferences){
   if(!resolvedReferences.length) return "";
   return `[레퍼런스 반영 규칙]
-아래에 주요 원문과 별도로 레퍼런스 자료가 여러 개 주어져. 각 레퍼런스에는 역할과 비중이 표시돼 있어.
+아래에 주요 원문과 별도로 레퍼런스 자료가 여러 개 주어져. 레퍼런스는 곁다리 참고자료가 아니라, 주요 원문과 함께 이 글을 만드는 실제 소재야 — 각 레퍼런스에 표시된 역할·비중·활용 지침에 따라 실제 내용을 적극적으로 가져다 써.
 - 사실이 서로 충돌하면 주요 원문을 항상 1순위 기준으로 삼아. 레퍼런스가 원문과 다른 사실을 말하면, 비중이 "높음"이어도 임의로 하나를 정답처럼 단정하지 말고, 애매하면 그 부분은 빼거나 완곡하게 표현해.
-- 비중이 "높음"인 레퍼런스는 실제 본문 분량에서 비중 있게 반영하고, "낮음"인 레퍼런스는 한두 문장 정도로 짧게만 참고해. 글 전체를 비중 낮은 레퍼런스 위주로 재구성하지 마.
+- 비중이 "높음"인 레퍼런스는 그 안의 구체적인 사실·수치·사례를 본문에 실질적인 분량으로 가져와서 써. "낮음"인 레퍼런스는 한두 문장 정도로 짧게만 참고해. 글 전체를 비중 낮은 레퍼런스 위주로 재구성하지 마.
+- 레퍼런스에 "활용 지침"이 적혀 있으면 그 지시를 최우선으로 따라(예: "이 통계만 인용해줘", "이 사례를 예시로 그대로 활용해줘") — 지침이 없으면 역할·비중 기준으로 알아서 판단해.
 - 역할이 "구성/흐름 참고용"이거나 "말투 참고용"인 레퍼런스는 내용(사실·수치·사례)을 본문에 끌어오지 말고, 각각 글의 구성 방식이나 말투만 참고해. (말투는 사용자 글쓰기 스타일 가이드가 있으면 그게 항상 우선이고, 그 레퍼런스는 스타일 가이드가 없을 때만 참고해.)
-- 역할이 "사실 보강용"이거나 "예시·사례용"인 레퍼런스도 원문과 마찬가지로, 거기 실제로 있는 내용만 써야 해 — 없는 사실을 지어내면 안 돼.`;
+- 역할이 "사실 보강용"이거나 "예시·사례용"인 레퍼런스를 적극 활용하더라도, 거기 실제로 있는 내용만 써야 해 — 없는 사실을 지어내거나 부풀리면 안 돼. 이건 비중이 "높음"이어도 예외 없어.`;
 }
 
 // 레퍼런스 내용 자체를 프롬프트에 넣는 블록
 function buildReferenceContextBlock(resolvedReferences){
   return resolvedReferences.map((r, i)=>
-    `[레퍼런스 ${i+1}: ${r.label} — 역할: ${REFERENCE_ROLE_LABELS[r.role]||r.role}, 비중: ${REFERENCE_WEIGHT_LABELS[r.weight]||r.weight}]\n${r.text}`
+    `[레퍼런스 ${i+1}: ${r.label} — 역할: ${REFERENCE_ROLE_LABELS[r.role]||r.role}, 비중: ${REFERENCE_WEIGHT_LABELS[r.weight]||r.weight}]${r.usageNote ? `\n활용 지침: ${r.usageNote}` : ""}\n${r.text}`
   ).join("\n\n");
 }
 
@@ -3589,7 +3687,9 @@ async function generateRewrittenColumn(){
   // 실제로 사용한 소스를 남겨둔다 — 프로젝트 저장에는 포함하지 않음(입력 재료일 뿐).
   p.lastGenerationSources = {
     mainSource: { label: "주요 원문", text: sourceText },
-    references: resolvedReferences.map(r => ({ label: r.label, text: r.text })),
+    // role/weight/usageNote도 함께 스냅샷 떠둬서, 비교 화면이 이후에 p.references가
+    // 바뀌거나 비워져도(예: 다음 생성을 위해 레퍼런스를 지운 경우) 흔들리지 않게 한다.
+    references: resolvedReferences.map(r => ({ label: r.label, text: r.text, role: r.role, weight: r.weight, usageNote: r.usageNote })),
   };
   if(result.report) result.report.overlaps = computeOverlapsForDraft(result.body, p.lastGenerationSources);
   return result;
@@ -3673,10 +3773,69 @@ async function runColumnRevision(){
     p.revisionHistory = [{ instruction, at: new Date().toISOString() }, ...p.revisionHistory].slice(0, 20);
     p.revisionInstruction = "";
     saveColumnDraftToStorage();
+    runGroundingCheck(); // 수정 후에도 새로 지어낸 내용이 없는지 다시 확인(비차단 — 완료되면 알아서 화면 갱신)
   }catch(e){
     p.error = "수정 지시를 반영하는 중 문제가 생겼어요: " + e.message;
   }
   p.loading.revision = false;
+  render();
+}
+
+/* =========================================================
+   근거 검증(할루시네이션 점검) — REPORT_CHANGES는 AI가 "내가 뭘 썼는지" 자기보고하는
+   것이라, 실제로 원문/레퍼런스에 없는 내용을 지어내고도 스스로는 눈치 못 챌 수 있다.
+   그래서 완전히 별도의 호출로, "이 글을 검토하는 입장"에서 다시 확인시킨다 — 같은
+   호출 안에서 자기 검토를 시키는 것보다 신뢰도가 높다. 결정적 겹침 점검과 달리 이건
+   AI 판단이라 100% 정확하다고 보장할 수 없어서, 화면에도 "AI 검토(참고용)"라고 표시한다.
+========================================================= */
+async function verifyColumnGrounding(rewrittenColumn, lastGenerationSources){
+  if(!lastGenerationSources) return [];
+  const sourcesText = [lastGenerationSources.mainSource, ...lastGenerationSources.references]
+    .filter(Boolean)
+    .map(s=>`[${s.label}]\n${s.text}`)
+    .join("\n\n");
+  const draftText = serializeDraftForRevision(rewrittenColumn);
+  const prompt = `너는 사실 검증 담당자야. 아래 [원본 자료]에 실제로 있는 내용만 [검토할 글]에 쓰였는지 확인해.
+
+[원본 자료]
+${sourcesText}
+
+[검토할 글]
+${draftText}
+
+[검증 규칙]
+- [검토할 글]에서 구체적인 사실·수치·기간·날짜·사례·인용·판례·기관명을 언급하는 문장을 하나씩 확인해.
+- 그 내용이 [원본 자료] 어디에도 실제로 없거나, 원본 내용을 부풀리거나 왜곡했으면 "근거 불충분"으로 표시해.
+- 단순한 문장 표현, 접속사, 상식적인 배경 설명(원본 내용을 바꾸지 않는 일반적 서술)은 검증 대상이 아니야.
+- 근거가 실제로 확인되는 내용은 언급하지 마 — 문제 있는 것만 나열해.
+
+출력은 아래 형식만 써. 다른 설명은 절대 붙이지 마.
+
+###UNGROUNDED_START###
+(문제되는 문장이나 주장을 한 줄에 하나씩 그대로 인용 — 문제 있는 게 없으면 이 줄부터 END까지 아무것도 쓰지 마)
+###UNGROUNDED_END###`;
+
+  const raw = await callBackendAI(prompt, false, 1200);
+  const block = extractBetween(raw, "###UNGROUNDED_START###", "###UNGROUNDED_END###");
+  // 목록 기호(-, * 뒤에 공백)만 벗겨내고, 순수 숫자로 시작하는 내용(예: "2024년...")은 건드리지 않는다
+  // (coerceStringArray의 "1. " 같은 번호매김 제거용 정규식을 그대로 쓰면 "2024년"의 "2024"까지 잘려나감)
+  return block.split(/\n+/).map(s=>s.replace(/^[-*]\s+/, "").trim()).filter(Boolean);
+}
+
+// 생성/수정 흐름을 막지 않도록 결과를 기다리지 않고 부른다 — 완료되면 알아서 해당 원고에 결과를 붙이고 다시 그린다.
+// (호출 시점의 원고 객체를 클로저로 붙잡아두므로, 그 사이에 새로 생성/수정된 원고를 덮어쓰지 않는다)
+async function runGroundingCheck(){
+  const p = state.pipeline;
+  const c = p.rewrittenColumn;
+  if(!c || !c.report || !p.lastGenerationSources) return;
+  c.report.groundingStatus = "checking";
+  render();
+  try{
+    c.report.groundingIssues = await verifyColumnGrounding(c, p.lastGenerationSources);
+  }catch(e){
+    c.report.groundingIssues = [];
+  }
+  c.report.groundingStatus = "done";
   render();
 }
 
@@ -3937,6 +4096,7 @@ async function runColumnGeneration(){
   try{
     p.rewrittenColumn = await generateRewrittenColumn();
     saveColumnDraftToStorage();
+    runGroundingCheck(); // 근거 없는 내용이 있는지 별도로 확인(비차단 — 완료되면 알아서 화면 갱신)
   }catch(e){
     p.error = "칼럼 재작성 중 문제가 생겼어요: " + e.message;
   }
@@ -4206,7 +4366,7 @@ function resetPipeline(){
     projectId: null, savedJustNow: false,
     rewrittenColumn: null, reelsScript: null, notionUrl: null, notionWarning: null, notionPageId: null, prettyPageUrl: null, publishDateStr: "",
     references: [], referencesOpen: false, briefOpen: false, brief: createEmptyBrief(),
-    revisionInstruction: "", revisionHistory: [], lastGenerationSources: null,
+    revisionInstruction: "", revisionHistory: [], lastGenerationSources: null, compareViewOpen: false,
     loading: { column:false, reels:false, notion:false, notionPublish:false, revision:false },
     error: null,
   };
@@ -4243,7 +4403,7 @@ function loadColumnProject(id){
     publishDateStr: (linkedPlan && linkedPlan.dateStr) || "",
     // 레퍼런스/브리프는 생성 시점 입력 재료일 뿐이라 프로젝트에 저장하지 않음 — 항상 빈 상태로 시작
     references: [], referencesOpen: false, briefOpen: false, brief: createEmptyBrief(),
-    revisionInstruction: "", revisionHistory: [], lastGenerationSources: null,
+    revisionInstruction: "", revisionHistory: [], lastGenerationSources: null, compareViewOpen: false,
     loading: { column:false, reels:false, notion:false, notionPublish:false, revision:false },
     error: null,
   };
@@ -4971,6 +5131,10 @@ function bindRouteEvents(){
       state.legacyNotionPublishOpen = !state.legacyNotionPublishOpen;
       render();
     });
+    const openCompareViewBtn = document.getElementById("open-compare-view-btn");
+    if(openCompareViewBtn) openCompareViewBtn.addEventListener("click", ()=>{ state.pipeline.compareViewOpen = true; render(); });
+    const closeCompareViewBtn = document.getElementById("close-compare-view-btn");
+    if(closeCompareViewBtn) closeCompareViewBtn.addEventListener("click", ()=>{ state.pipeline.compareViewOpen = false; render(); });
     const restoreDraftBtn = document.getElementById("restore-draft-btn");
     if(restoreDraftBtn) restoreDraftBtn.addEventListener("click", restoreColumnDraft);
     const dismissDraftBtn = document.getElementById("dismiss-draft-btn");

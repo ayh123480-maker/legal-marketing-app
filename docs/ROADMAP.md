@@ -28,6 +28,10 @@
       내역(AI 서술) + 원문/레퍼런스와 겹치는 표현 실시간 점검(결정적 n-gram
       대조, AI 자기보고 아님)으로 표절·중복 위험을 바로 확인 가능
       (`docs/tasks/reference-based-column-workflow.md` 15절).
+- [x] (2026-09-17) 근거 없는 내용(할루시네이션) 점검을 별도 AI 검증 호출로 추가,
+      레퍼런스에 활용 지침(`usageNote`) 필드 추가해 "참고자료"가 아니라 "소재"로
+      취급, 비교 화면(큰 모달 — 왼쪽 소스/오른쪽 칼럼/아래 리포트)을 추가
+      (`docs/tasks/reference-based-column-workflow.md` 16절).
 
 ## 다음 (아직 착수 안 함)
 
