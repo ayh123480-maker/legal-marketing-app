@@ -336,15 +336,16 @@ const state = {
   brandSettings: { orgName:"", phone:"", tagline:"", kicker:"" },  // 카드뉴스에 들어갈 사무소 정보 (kicker: 카드 상단에 뜨는 시리즈 라벨)
   styleGuide: "",        // 글쓰기 스타일 가이드 (칼럼/카드뉴스/릴스 전체에 자동 적용)
   cardColorPresets: {},  // {coverBg,coverText,contentBg,contentText,ctaBg,ctaText,accent} — 카드뉴스 전체에 적용되는 단일 색상 팔레트 (카테고리 구분 없음)
+  cardLayoutPresets: null, // {cover,content,cta} 역할별로 {headline:{x,y,scale,align}, subtext:{...}, hasVisual, visual:{y,hFrac,wFrac}, textLength:{headlineChars,subtextLines,style}} — 레퍼런스 이미지에서 학습한 요소 위치·크기·분량. null이면 computeInitialSlideLayout()의 기본 규칙을 그대로 씀
   styleTemplates: [],    // [{id, name, styleGuide, createdAt}] — 글쓰기 스타일 전용 템플릿
   cardNewsPrompt: "",    // 카드뉴스 전용 스타일/톤/구성 프롬프트 (카드뉴스 대본 생성시에만 반영)
-  cardNewsTemplates: [], // [{id, name, cardNewsPrompt, cardColorPresets, brandSettings, slideCount, createdAt}] — 카드뉴스 전용 템플릿
+  cardNewsTemplates: [], // [{id, name, cardNewsPrompt, cardColorPresets, brandSettings, slideCount, layoutPresets, createdAt}] — 카드뉴스 전용 템플릿
   cardDefaultBgImage: null,   // 카드뉴스를 새로 만들 때 모든 슬라이드에 기본으로 깔리는 배경 이미지 (data URL)
   cardDefaultBgOpacity: 100,  // 위 기본 배경 이미지의 기본 투명도 (0~100)
   imageLibrary: [],      // [{id, dataUrl, name, addedAt}] — 자주 쓰는 이미지 보관함 (검색해서 저장했든, 직접 업로드했든 여기 모아둠)
   columnsSettingsOpen: false,  // 칼럼 페이지 내 글쓰기 스타일 설정 패널 펼침 여부 (저장 안 함, 세션 한정)
   cardSettingsOpen: false,     // 카드뉴스 페이지 내 카드뉴스 설정 패널 펼침 여부 (저장 안 함, 세션 한정)
-  designReference: { images: [], loading: false, error: "", lastNote: "" }, // 레퍼런스 디자인 학습 패널 상태 (세션 한정, 저장 안 함)
+  designReference: { images: [], loading: false, error: "", lastNote: "" }, // 레퍼런스 디자인 학습 패널 상태 (세션 한정, 저장 안 함). images: [{dataUrl, role}] — role은 "auto"|"cover"|"content"|"cta"
   cardBulkEditOpen: false,     // 완성된 카드뉴스 화면의 "킥커·발행주체 일괄 수정" 패널 펼침 여부 (세션 한정)
   legacyNotionPublishOpen: false, // "노션 내용으로 발행"(예쁜 공개 페이지, 레거시) 패널 펼침 여부 — 기본 흐름에서는 접어둔다 (세션 한정)
 
@@ -463,6 +464,10 @@ async function loadState(){
     if(ccp && ccp.value) state.cardColorPresets = JSON.parse(ccp.value);
   }catch(e){}
   try{
+    const clp = await window.storage.get("mkt:cardLayoutPresets", false);
+    if(clp && clp.value) state.cardLayoutPresets = JSON.parse(clp.value);
+  }catch(e){}
+  try{
     const st = await window.storage.get("mkt:styleTemplates", false);
     if(st && st.value) state.styleTemplates = JSON.parse(st.value);
   }catch(e){}
@@ -501,6 +506,7 @@ async function saveCardNewsProjects(){ await window.storage.set("mkt:cardNewsPro
 async function saveBrandSettings(){ await window.storage.set("mkt:brandSettings", JSON.stringify(state.brandSettings), false); }
 async function saveStyleGuide(){ await window.storage.set("mkt:styleGuide", JSON.stringify(state.styleGuide), false); }
 async function saveCardColorPresets(){ await window.storage.set("mkt:cardColorPresets", JSON.stringify(state.cardColorPresets), false); }
+async function saveCardLayoutPresets(){ await window.storage.set("mkt:cardLayoutPresets", JSON.stringify(state.cardLayoutPresets), false); }
 async function saveStyleTemplates(){ await window.storage.set("mkt:styleTemplates", JSON.stringify(state.styleTemplates), false); }
 async function saveCardNewsPrompt(){ await window.storage.set("mkt:cardNewsPrompt", JSON.stringify(state.cardNewsPrompt), false); }
 async function saveCardNewsTemplates(){ await window.storage.set("mkt:cardNewsTemplates", JSON.stringify(state.cardNewsTemplates), false); }
@@ -629,6 +635,7 @@ async function saveCurrentAsCardNewsTemplate(name){
     cardColorPresets: settings.cardColorPresets,
     brandSettings: settings.brandSettings,
     slideCount: settings.slideCount,
+    layoutPresets: state.cardLayoutPresets || null,
     createdAt: new Date().toISOString(),
   };
   state.cardNewsTemplates.push(tmpl);
@@ -649,9 +656,11 @@ async function loadCardNewsTemplate(id){
   state.cardColorPresets = tmpl.cardColorPresets || {};
   state.brandSettings = tmpl.brandSettings || state.brandSettings;
   state.cardPipeline.slideCount = tmpl.slideCount || 8;
+  state.cardLayoutPresets = tmpl.layoutPresets || null;
   await saveCardNewsPrompt();
   await saveCardColorPresets();
   await saveBrandSettings();
+  await saveCardLayoutPresets();
   render();
 }
 
@@ -662,14 +671,20 @@ async function deleteCardNewsTemplate(id){
 }
 
 /* =========================================================
-   레퍼런스 디자인으로 학습: 실제 파인튜닝/학습이 아니라,
-   Claude Vision에게 참고 이미지를 보여주고 색상 팔레트·타이포·분위기를
-   분석시켜서 "카드뉴스 색상"과 "카드뉴스 스타일 프롬프트" 필드를 자동으로
-   채워주는 기능. 그 뒤로는 기존 "현재 설정을 템플릿으로 저장" 버튼으로
-   이어서 템플릿화하면 된다 — 새 저장소를 만들지 않고 기존 템플릿 시스템에
-   올라타는 구조.
+   레퍼런스 디자인으로 학습 (2026-09-17 확장: 요소 위치·크기 비율 + 글자 분량까지):
+   실제 파인튜닝/학습이 아니라, Claude Vision에게 참고 이미지(여러 장, 슬라이드
+   역할별로 섞여도 됨)를 보여주고 (1) 색상 팔레트·분위기 (2) 헤드라인/본문/이미지
+   자리의 위치(%)·상대 크기·정렬 (3) 헤드라인 글자 수·본문 줄 수 같은 "분량"까지
+   분석시켜서 상태에 반영하는 기능. 그 뒤로는 기존 "현재 설정을 템플릿으로 저장"
+   버튼으로 이어서 템플릿화하면 된다 — 템플릿 스키마에 layoutPresets 필드만 추가.
+
+   서버(api/ai.js)가 한 번의 AI 호출에 이미지 4장까지만 허용하므로, 레퍼런스 이미지가
+   그보다 많으면 DESIGN_REFERENCE_BATCH_SIZE 단위로 나눠 여러 번 호출한 뒤 결과를 합친다.
 ========================================================= */
-const DESIGN_REFERENCE_MAX_IMAGES = 3;
+const DESIGN_REFERENCE_MAX_IMAGES = 12; // 카드뉴스 한 세트(표지~CTA) 전체를 레퍼런스로 다 넣을 수 있을 만큼 넉넉히
+const DESIGN_REFERENCE_BATCH_SIZE = 4;  // api/ai.js의 이미지 개수 제한과 맞춤
+const DESIGN_REFERENCE_ROLE_LABEL = { auto:"자동 판별", cover:"표지", content:"본문", cta:"CTA" };
+const CARD_LAYOUT_ROLES = ["cover","content","cta"];
 
 async function addDesignReferenceImage(file){
   const dr = state.designReference;
@@ -679,7 +694,7 @@ async function addDesignReferenceImage(file){
   }
   const dataUrl = await readFileAsDataURL(file);
   const thumb = await downscaleImageForLibrary(dataUrl, 1400, 0.85);
-  dr.images.push(thumb);
+  dr.images.push({ dataUrl: thumb, role: "auto" });
   dr.error = "";
   render();
 }
@@ -689,6 +704,145 @@ function removeDesignReferenceImage(index){
   render();
 }
 
+function setDesignReferenceRole(index, role){
+  const img = state.designReference.images[index];
+  if(img) img.role = role;
+}
+
+function cardRoleForIndex(idx, total){
+  if(idx === 0) return "cover";
+  if(idx === total-1) return "cta";
+  return "content";
+}
+
+function averageHexColors(hexList){
+  const valid = (hexList||[]).filter(h=>h && /^#[0-9a-fA-F]{6}$/.test(h));
+  if(!valid.length) return null;
+  let r=0,g=0,b=0;
+  valid.forEach(h=>{ r += parseInt(h.slice(1,3),16); g += parseInt(h.slice(3,5),16); b += parseInt(h.slice(5,7),16); });
+  const n = valid.length;
+  const toHex = (v)=> Math.max(0,Math.min(255,Math.round(v/n))).toString(16).padStart(2,"0");
+  return "#"+toHex(r)+toHex(g)+toHex(b);
+}
+function averageNumbers(list){
+  const valid = (list||[]).filter(v=>typeof v === "number" && isFinite(v));
+  if(!valid.length) return null;
+  return Math.round((valid.reduce((a,b)=>a+b,0)/valid.length) * 100) / 100;
+}
+function pickMostCommon(list, fallback){
+  const counts = {};
+  (list||[]).forEach(v=>{ if(v!=null && v!=="") counts[v] = (counts[v]||0)+1; });
+  let best = fallback, bestCount = 0;
+  Object.keys(counts).forEach(k=>{ if(counts[k] > bestCount){ best = k; bestCount = counts[k]; } });
+  return best;
+}
+
+/* 레퍼런스 이미지 묶음(최대 4장) 하나에 대한 분석 프롬프트. 사용자가 이미지별로 역할을
+   직접 지정해뒀으면 그 역할을 그대로 알려주고, "auto"면 AI가 시각적 특징으로 판단하게 한다. */
+function buildDesignReferenceAnalysisPrompt(batch){
+  const hints = batch.map((img,i)=>{
+    return img.role !== "auto"
+      ? `${i+1}번째 이미지는 사용자가 이미 "${DESIGN_REFERENCE_ROLE_LABEL[img.role]}" 역할로 지정했어. results[${i}].role은 반드시 "${img.role}"로 답해.`
+      : `${i+1}번째 이미지는 역할이 지정 안 됐으니, 큰 타이틀 위주면 표지(cover), 연락처·강조박스가 있으면 CTA(cta), 그 외엔 본문(content)으로 시각적 특징을 보고 직접 판단해줘.`;
+  }).join("\n");
+
+  return `너는 인스타그램 카드뉴스(세로형 슬라이드 이미지 콘텐츠) 디자이너야.
+첨부된 ${batch.length}장의 이미지는 사용자가 앞으로 만들 카드뉴스가 최대한 닮았으면 하는 참고 디자인이야.
+각 이미지를 첨부된 순서대로 분석해서 아래 JSON 형식으로만 답해. 다른 설명이나 마크다운 코드블록 없이 JSON 객체 하나만 출력해.
+
+${hints}
+
+이미지마다 다음을 관찰해서 채워:
+- role: "cover"|"content"|"cta" 중 하나
+- 배경색/글자색(hex). role이 "cover"면 coverBg/coverText만 채우고 contentBg/contentText/ctaBg/ctaText는 null로, role이 "content"면 contentBg/contentText만, "cta"면 ctaBg/ctaText만 채워(나머지는 null)
+- accent: 포인트색(강조 바, 번호 등)이 보이면 hex로, 안 보이면 null
+- headline: 가장 큰 글자(제목)의 가로 중심 위치(xPct, 0~100=카드 폭 기준), 세로 중심 위치(yPct, 0~100=카드 높이 기준), 카드 폭 대비 글자 크기 체감 비율(fontSizeRatio: 1.0=보통, 1.3=꽤 크게 강조, 0.8=작게), 정렬(align: left/center/right)
+- subtext: 본문/보조설명 텍스트의 같은 정보(xPct, yPct, fontSizeRatio, align)
+- hasVisual: 사진·아이콘·차트·표처럼 텍스트가 아닌 시각 요소가 있는지(boolean)
+- visual: hasVisual이 true일 때만 그 영역의 세로 중심 위치(yPct), 카드 높이 대비 높이 비율(heightRatio, 0~1), 카드 폭 대비 너비 비율(widthRatio, 0~1). 없으면 null
+- textLength: headlineChars(헤드라인 대략 글자 수, 숫자), subtextLines(보조설명 대략 줄 수, 숫자), style("list"=항목 나열형 / "paragraph"=한 문단형)
+
+{
+  "overallStyleNote": "이미지 전체를 종합한 전반적 톤을 한국어 3~5문장으로 (여백, 폰트 굵기 느낌, 색 사용 절제/과감함 등) — 카드뉴스 생성 프롬프트에 바로 쓸 수 있게 구체적으로",
+  "results": [
+    {
+      "role": "cover",
+      "coverBg": "#RRGGBB", "coverText": "#RRGGBB", "contentBg": null, "contentText": null, "ctaBg": null, "ctaText": null,
+      "accent": "#RRGGBB",
+      "headline": {"xPct":50, "yPct":28, "fontSizeRatio":1.1, "align":"left"},
+      "subtext": {"xPct":50, "yPct":55, "fontSizeRatio":1.0, "align":"left"},
+      "hasVisual": false, "visual": null,
+      "textLength": {"headlineChars":14, "subtextLines":2, "style":"paragraph"}
+    }
+  ]
+}
+
+results 배열의 길이와 순서는 반드시 첨부된 이미지 개수(${batch.length}개) 및 순서와 정확히 같아야 해.`;
+}
+
+/* 여러 배치에서 모은 이미지별 분석 결과(allResults)를 역할(cover/content/cta)별로 평균 내서
+   색상 팔레트(newPreset)와 레이아웃/분량 프리셋(layoutPresets)으로 합친다. */
+function mergeDesignReferenceAnalysis(allResults){
+  const newPreset = { ...defaultCardColors(), ...(state.cardColorPresets||{}) };
+  const grouped = { cover:[], content:[], cta:[] };
+  const accentList = [];
+  (allResults||[]).forEach(r=>{
+    if(!r) return;
+    if(r.accent) accentList.push(r.accent);
+    if(CARD_LAYOUT_ROLES.includes(r.role)) grouped[r.role].push(r);
+  });
+  const accentAvg = averageHexColors(accentList);
+  if(accentAvg) newPreset.accent = accentAvg;
+
+  const colorKeysByRole = { cover:["coverBg","coverText"], content:["contentBg","contentText"], cta:["ctaBg","ctaText"] };
+  const defaultLayoutY = { cover:{headline:28,subtext:55}, content:{headline:26,subtext:52}, cta:{headline:38,subtext:50} };
+  const layoutPresets = { ...(state.cardLayoutPresets||{}) };
+  const roleCounts = {};
+
+  CARD_LAYOUT_ROLES.forEach(role=>{
+    const items = grouped[role];
+    roleCounts[role] = items.length;
+    if(!items.length) return;
+
+    colorKeysByRole[role].forEach(key=>{
+      const avg = averageHexColors(items.map(it=>it[key]));
+      if(avg) newPreset[key] = avg;
+    });
+
+    const hl = items.map(it=>it.headline||{});
+    const st = items.map(it=>it.subtext||{});
+    const visualItems = items.filter(it=>it.hasVisual && it.visual);
+    layoutPresets[role] = {
+      headline: {
+        x: averageNumbers(hl.map(h=>h.xPct)) ?? 50,
+        y: averageNumbers(hl.map(h=>h.yPct)) ?? defaultLayoutY[role].headline,
+        scale: averageNumbers(hl.map(h=>h.fontSizeRatio)) ?? 1,
+        align: pickMostCommon(hl.map(h=>h.align), "left"),
+      },
+      subtext: {
+        x: averageNumbers(st.map(s=>s.xPct)) ?? 50,
+        y: averageNumbers(st.map(s=>s.yPct)) ?? defaultLayoutY[role].subtext,
+        scale: averageNumbers(st.map(s=>s.fontSizeRatio)) ?? 1,
+        align: pickMostCommon(st.map(s=>s.align), "left"),
+      },
+      hasVisual: visualItems.length > items.length/2,
+      visual: visualItems.length ? {
+        y: averageNumbers(visualItems.map(v=>v.visual.yPct)) ?? 75,
+        hFrac: averageNumbers(visualItems.map(v=>v.visual.heightRatio)) ?? 0.22,
+        wFrac: averageNumbers(visualItems.map(v=>v.visual.widthRatio)) ?? 0.6,
+      } : null,
+      textLength: {
+        headlineChars: averageNumbers(items.map(it=>it.textLength && it.textLength.headlineChars)),
+        subtextLines: averageNumbers(items.map(it=>it.textLength && it.textLength.subtextLines)),
+        style: pickMostCommon(items.map(it=>it.textLength && it.textLength.style), "paragraph"),
+      },
+      sampleCount: items.length,
+    };
+  });
+
+  return { newPreset, layoutPresets, roleCounts };
+}
+
 async function analyzeDesignReference(){
   const dr = state.designReference;
   if(dr.loading) return;
@@ -696,42 +850,39 @@ async function analyzeDesignReference(){
   dr.loading = true; dr.error = ""; dr.lastNote = "";
   render();
   try{
-    const prompt = `너는 인스타그램 카드뉴스(세로형 슬라이드 이미지 콘텐츠) 디자이너야.
-첨부된 이미지는 사용자가 앞으로 만들 카드뉴스가 닮았으면 하는 참고 디자인이야.
-이 이미지의 배경색·글자색·포인트색, 타이포그래피(굵기/폰트 느낌), 여백·레이아웃, 전체 무드를 분석해서
-아래 JSON 형식으로만 답변해. 다른 설명이나 마크다운 코드블록 없이 JSON 객체 하나만 출력해.
+    const allResults = [];
+    const styleNotes = [];
+    for(let i=0;i<dr.images.length;i+=DESIGN_REFERENCE_BATCH_SIZE){
+      const batch = dr.images.slice(i, i+DESIGN_REFERENCE_BATCH_SIZE);
+      const prompt = buildDesignReferenceAnalysisPrompt(batch);
+      const images = batch.map(img=>dataUrlToVisionImage(img.dataUrl));
+      const raw = await callBackendAI(prompt, false, 500 + batch.length*400, images);
+      const parsed = extractJSONBlock(raw);
+      const results = Array.isArray(parsed.results) ? parsed.results : [];
+      // 사용자가 이미지별로 역할을 직접 지정했으면 AI 응답과 무관하게 그 값으로 확정한다
+      batch.forEach((img, bi)=>{ if(img.role !== "auto" && results[bi]) results[bi].role = img.role; });
+      allResults.push(...results);
+      const note = String(parsed.overallStyleNote || "").trim();
+      if(note) styleNotes.push(note);
+    }
 
-{
-  "coverBg": "#RRGGBB",
-  "coverText": "#RRGGBB",
-  "contentBg": "#RRGGBB",
-  "contentText": "#RRGGBB",
-  "ctaBg": "#RRGGBB",
-  "ctaText": "#RRGGBB",
-  "accent": "#RRGGBB",
-  "styleNote": "이 디자인의 느낌을 카드뉴스 생성 프롬프트에 바로 쓸 수 있게 한국어 3~5문장으로 구체적으로 설명 (예: 여백을 넉넉하게 쓰고 문장은 짧게 끊는다, 세리프 계열의 묵직한 헤드라인, 포인트 색은 밑줄이나 박스로만 절제해서 쓴다 등)"
-}
-
-색상은 이미지에서 실제로 관찰되는 색을 최대한 정확한 hex 코드로 추정해줘.
-표지(cover)/본문(content)/CTA(마지막 장) 배경이 이미지 안에서 서로 다르게 보이면 그 차이를 반영하고,
-구분이 안 되면 전체적으로 일관된 색을 같은 값으로 줘도 돼.`;
-
-    const images = dr.images.map(dataUrlToVisionImage);
-    const text = await callBackendAI(prompt, false, 900, images);
-    const parsed = extractJSONBlock(text);
-
-    const colorKeys = ["coverBg","coverText","contentBg","contentText","ctaBg","ctaText","accent"];
-    const newPreset = { ...defaultCardColors() };
-    colorKeys.forEach(k=>{ if(parsed[k] && /^#[0-9a-fA-F]{6}$/.test(parsed[k])) newPreset[k] = parsed[k]; });
+    const { newPreset, layoutPresets, roleCounts } = mergeDesignReferenceAnalysis(allResults);
     state.cardColorPresets = newPreset;
+    state.cardLayoutPresets = layoutPresets;
 
-    const styleNote = String(parsed.styleNote || "").trim();
+    const styleNote = styleNotes.join("\n");
     if(styleNote){
       state.cardNewsPrompt = (state.cardNewsPrompt ? state.cardNewsPrompt.trim() + "\n\n" : "") + "[레퍼런스 디자인 분석] " + styleNote;
     }
     await saveCardColorPresets();
+    await saveCardLayoutPresets();
     await saveCardNewsPrompt();
-    dr.lastNote = styleNote || "색상 팔레트를 적용했어요.";
+
+    const roleNoteParts = [];
+    if(roleCounts.cover) roleNoteParts.push(`표지 ${roleCounts.cover}장`);
+    if(roleCounts.content) roleNoteParts.push(`본문 ${roleCounts.content}장`);
+    if(roleCounts.cta) roleNoteParts.push(`CTA ${roleCounts.cta}장`);
+    dr.lastNote = (roleNoteParts.length ? roleNoteParts.join("·")+" 인식해서 " : "") + "색상·레이아웃·분량을 학습했어요.";
   }catch(e){
     dr.error = "분석에 실패했어요: " + e.message;
   }
@@ -1561,20 +1712,25 @@ function renderCardNewsSettingsPanel(){
 
   const dr = state.designReference;
   const drThumbs = (dr.images||[]).map((img, i)=>`
-    <div style="position:relative;width:64px;height:80px;border-radius:6px;overflow:hidden;border:1px solid var(--line);flex-shrink:0;">
-      <img src="${img}" style="width:100%;height:100%;object-fit:cover;display:block;" />
-      <button data-remove-design-reference="${i}" title="삭제" style="position:absolute;top:2px;right:2px;width:18px;height:18px;border-radius:4px;border:none;background:rgba(0,0,0,0.55);color:#fff;font-size:10px;cursor:pointer;display:flex;align-items:center;justify-content:center;">✕</button>
+    <div style="width:72px;flex-shrink:0;">
+      <div style="position:relative;width:72px;height:90px;border-radius:6px;overflow:hidden;border:1px solid var(--line);">
+        <img src="${img.dataUrl}" style="width:100%;height:100%;object-fit:cover;display:block;" />
+        <button data-remove-design-reference="${i}" title="삭제" style="position:absolute;top:2px;right:2px;width:18px;height:18px;border-radius:4px;border:none;background:rgba(0,0,0,0.55);color:#fff;font-size:10px;cursor:pointer;display:flex;align-items:center;justify-content:center;">✕</button>
+      </div>
+      <select class="field" data-design-reference-role="${i}" style="width:100%;margin-top:4px;font-size:10px;padding:2px 3px;">
+        ${Object.keys(DESIGN_REFERENCE_ROLE_LABEL).map(r=>`<option value="${r}" ${img.role===r?"selected":""}>${DESIGN_REFERENCE_ROLE_LABEL[r]}</option>`).join("")}
+      </select>
     </div>
   `).join("");
 
   return `
     <div style="padding-top:14px;">
       <div style="font-weight:700;font-size:13px;margin-bottom:6px;">🖼️ 레퍼런스 디자인으로 학습</div>
-      <div class="section-note" style="margin-top:0;">원하는 느낌의 카드뉴스 이미지를 올리면, AI가 색상·타이포·분위기를 분석해서 아래 "카드뉴스 색상"과 "스타일 프롬프트"를 자동으로 채워줘요. (실제로 모델을 재학습시키는 건 아니고, 이미지를 보고 스타일을 읽어서 기존 설정값에 반영하는 방식이에요) 마음에 들면 맨 아래 "현재 설정을 템플릿으로 저장"으로 이어서 템플릿으로 남겨두세요.</div>
+      <div class="section-note" style="margin-top:0;">원하는 느낌의 카드뉴스 이미지를 여러 장(표지·본문·CTA 섞어서 최대 ${DESIGN_REFERENCE_MAX_IMAGES}장까지) 올리면, AI가 색상·분위기뿐 아니라 헤드라인/본문/이미지 자리의 위치·크기 비율, 글자 분량(헤드라인 글자 수·본문 줄 수)까지 분석해서 반영해요. 각 이미지 아래에서 "표지/본문/CTA" 역할을 직접 지정할 수 있고, "자동 판별"로 두면 AI가 알아서 구분해요. (실제로 모델을 재학습시키는 건 아니고, 이미지를 보고 관찰한 값을 기존 설정값에 대입하는 방식이에요) 마음에 들면 맨 아래 "현재 설정을 템플릿으로 저장"으로 이어서 템플릿으로 남겨두세요.</div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin:8px 0;">
         ${drThumbs}
         ${(dr.images||[]).length < DESIGN_REFERENCE_MAX_IMAGES ? `
-          <label class="btn outline" style="width:64px;height:80px;display:flex;align-items:center;justify-content:center;font-size:11px;text-align:center;cursor:pointer;flex-shrink:0;">
+          <label class="btn outline" style="width:72px;height:90px;display:flex;align-items:center;justify-content:center;font-size:11px;text-align:center;cursor:pointer;flex-shrink:0;">
             + 추가
             <input type="file" accept="image/*" id="design-reference-file-input" style="display:none;" />
           </label>
@@ -1583,6 +1739,7 @@ function renderCardNewsSettingsPanel(){
       <button class="btn amber" id="analyze-design-reference-btn" ${dr.loading?"disabled":""}>${dr.loading ? "분석 중..." : "🔍 분석해서 스타일 적용"}</button>
       ${dr.error ? `<div style="font-size:12px;color:var(--seal);margin-top:8px;">${escapeHtml(dr.error)}</div>` : ""}
       ${(dr.lastNote && !dr.loading) ? `<div class="banner ok" style="display:block;margin-top:8px;">✅ 적용됨: ${escapeHtml(dr.lastNote)}</div>` : ""}
+      ${state.cardLayoutPresets ? `<div class="section-note" style="margin-top:6px;">학습된 레이아웃이 적용 중이에요 — 앞으로 "카드뉴스 완성하기"로 새로 만드는 카드뉴스부터 반영돼요(이미 만든 카드뉴스는 안 바뀜). <button data-clear-card-layout-presets style="border:none;background:none;color:var(--seal);text-decoration:underline;cursor:pointer;font-size:11px;padding:0;">학습된 레이아웃 지우기</button></div>` : ""}
       <div style="height:1px;background:var(--line);margin:18px 0;"></div>
 
       <div style="font-weight:700;font-size:13px;margin-bottom:6px;">카드뉴스 색상 · 분위기</div>
@@ -4042,6 +4199,25 @@ ${c.body}
 }
 
 /* p: state.cardPipeline, c: {title, body} 형태로 정리된 원고(baseContent) */
+/* 레퍼런스 이미지에서 학습한 역할별 분량(헤드라인 글자 수·본문 줄 수)을 대본 생성 프롬프트에 지시문으로 넣는다.
+   학습된 값이 없으면(state.cardLayoutPresets가 null이거나 role별 textLength가 없으면) 빈 문자열을 돌려줘서 기존 동작 그대로 유지한다. */
+function layoutTextLengthPromptBlock(){
+  const lp = state.cardLayoutPresets;
+  if(!lp) return "";
+  const roleLabel = { cover:"표지", content:"본문", cta:"CTA" };
+  const lines = [];
+  CARD_LAYOUT_ROLES.forEach(role=>{
+    const t = lp[role] && lp[role].textLength;
+    if(!t) return;
+    const parts = [];
+    if(t.headlineChars) parts.push(`헤드라인 약 ${Math.round(t.headlineChars)}자`);
+    if(t.subtextLines) parts.push(`보조설명 약 ${Math.round(t.subtextLines)}줄(${t.style==="list"?"항목 나열형":"한 문단형"})`);
+    if(parts.length) lines.push(`- ${roleLabel[role]}: ${parts.join(", ")}`);
+  });
+  if(!lines.length) return "";
+  return `\n\n[레퍼런스 디자인에서 학습한 분량 - 최대한 맞출 것]\n${lines.join("\n")}`;
+}
+
 async function generateCardNewsScript(p, c){
   const persona = writingPersonaPrompt();
   const outline = (p.cardOutline||[]).length ? p.cardOutline : null;
@@ -4050,13 +4226,14 @@ async function generateCardNewsScript(p, c){
   const densityNote = densityInstruction(density);
   const customPrompt = (state.cardNewsPrompt||"").trim();
   const customPromptBlock = customPrompt ? `\n\n[카드뉴스 스타일 프롬프트 - 반드시 반영]\n${customPrompt}` : "";
+  const layoutTextLengthBlock = layoutTextLengthPromptBlock();
 
   const roleLabel = (role) => role==="cover" ? "표지" : (role==="cta" ? "CTA" : "본문");
   const outlineBlock = outline
     ? `아래는 이미 확정된 슬라이드별 구성안이야. 반드시 이 순서와 내용 배정을 그대로 따르고, 각 슬라이드는 자신에게 배정된 내용만 다뤄:\n${outline.map(o=>`${o.no}번(${roleLabel(o.role)}${o.hasVisual? ", 이미지/차트 자리가 필요한 슬라이드":""}): ${o.topic ? o.topic : "(내용 미정 - 앞뒤 흐름에 맞게 알아서 채워줘)"}`).join("\n")}`
     : `1번 슬라이드는 시선을 끄는 표지, ${count}번(마지막) 슬라이드는 상담 유도 CTA로, 반드시 ${count}장을 모두 채워.`;
 
-  const prompt = `너는 인스타그램 법률 마케팅 카드뉴스만 수백 건 만들어본 베테랑 카피라이터야. ${persona}${customPromptBlock}
+  const prompt = `너는 인스타그램 법률 마케팅 카드뉴스만 수백 건 만들어본 베테랑 카피라이터야. ${persona}${customPromptBlock}${layoutTextLengthBlock}
 
 아래 내용을 정확히 ${count}장짜리 카드뉴스 대본으로 각색해.
 
@@ -4136,23 +4313,26 @@ TABLE: 항목1=값1 | 항목2=값2 (이미지/차트 자리 슬라이드에서 �
     const align = isCta ? "center" : "left";
     const hasVisual = outline && outline[idx] ? !!outline[idx].hasVisual : false;
     const layout = computeInitialSlideLayout(headline, subtext, idx===0, isCta, hasVisual);
+    // 레퍼런스 이미지에서 이 슬라이드 역할(표지/본문/CTA)의 레이아웃을 학습해뒀으면 그 위치·크기·정렬을 그대로 쓰고,
+    // 없으면(state.cardLayoutPresets===null 등) 기존처럼 computeInitialSlideLayout의 동적 계산값을 쓴다.
+    const lp = state.cardLayoutPresets && state.cardLayoutPresets[cardRoleForIndex(idx, count)];
     const layers = [
-      { id:"headline", type:"headline", text: headline, x:50, y: layout.headlineY, scale:1, align },
-      { id:"subtext", type:"subtext", text: subtext, x:50, y: layout.subtextY, scale:1, align },
+      { id:"headline", type:"headline", text: headline, x: lp ? lp.headline.x : 50, y: lp ? lp.headline.y : layout.headlineY, scale: lp ? lp.headline.scale : 1, align: lp ? lp.headline.align : align },
+      { id:"subtext", type:"subtext", text: subtext, x: lp ? lp.subtext.x : 50, y: lp ? lp.subtext.y : layout.subtextY, scale: lp ? lp.subtext.scale : 1, align: lp ? lp.subtext.align : align },
       ...makeChromeLayers(idx, count, state.brandSettings),
     ];
     // "이미지/차트 자리가 필요한 슬라이드"인데 아직 이미지가 없으면: 실제 데이터로 뽑아낸 표가 있으면 표를 자동으로 넣고,
     // 없으면 사진을 나중에 채워 넣을 자리(점선 박스)를 시각적으로 남겨서 체크 여부가 카드에 실제로 드러나게 한다.
     // computeInitialSlideLayout이 텍스트 밴드를 미리 줄여둬서 여기 아래에 실제로 겹치지 않는 공간이 있다.
     if(hasVisual){
-      const visualY = layout.visualY || 82;
+      const visualY = (lp && lp.visual) ? lp.visual.y : (layout.visualY || 82);
       if(tableRows){
         layers.push({ id:"table-"+Date.now()+"-"+Math.random().toString(36).slice(2,6), type:"table", rows: tableRows, x:50, y:visualY, scale:1 });
       } else {
         const ph = makePlaceholderImageLayer();
         ph.y = visualY;
-        ph.hFrac = layout.visualHFrac || 0.22;
-        ph.wFrac = Math.min(0.84, ph.hFrac / 0.7);
+        ph.hFrac = (lp && lp.visual) ? lp.visual.hFrac : (layout.visualHFrac || 0.22);
+        ph.wFrac = (lp && lp.visual) ? lp.visual.wFrac : Math.min(0.84, ph.hFrac / 0.7);
         layers.push(ph);
       }
     }
@@ -4169,13 +4349,14 @@ TABLE: 항목1=값1 | 항목2=값2 (이미지/차트 자리 슬라이드에서 �
     const isCta = idx === count-1;
     const align = isCta ? "center" : "left";
     const layout = computeInitialSlideLayout("", "", idx===0, isCta);
+    const lp = state.cardLayoutPresets && state.cardLayoutPresets[cardRoleForIndex(idx, count)];
     slides.push({
       no: idx+1, headline: "", subtext: "", highlight: "", plannedVisual: false,
       bgImage: state.cardDefaultBgImage || null,
       bgImageOpacity: state.cardDefaultBgImage ? (state.cardDefaultBgOpacity!=null?state.cardDefaultBgOpacity:100) : null,
       layers: [
-        { id:"headline", type:"headline", text:"", x:50, y: layout.headlineY, scale:1, align },
-        { id:"subtext", type:"subtext", text:"", x:50, y: layout.subtextY, scale:1, align },
+        { id:"headline", type:"headline", text:"", x: lp ? lp.headline.x : 50, y: lp ? lp.headline.y : layout.headlineY, scale: lp ? lp.headline.scale : 1, align: lp ? lp.headline.align : align },
+        { id:"subtext", type:"subtext", text:"", x: lp ? lp.subtext.x : 50, y: lp ? lp.subtext.y : layout.subtextY, scale: lp ? lp.subtext.scale : 1, align: lp ? lp.subtext.align : align },
         ...makeChromeLayers(idx, count, state.brandSettings),
       ],
     });
@@ -5350,8 +5531,17 @@ function bindRouteEvents(){
     document.querySelectorAll("[data-remove-design-reference]").forEach(btn=>{
       btn.addEventListener("click", ()=> removeDesignReferenceImage(Number(btn.dataset.removeDesignReference)));
     });
+    document.querySelectorAll("[data-design-reference-role]").forEach(sel=>{
+      sel.addEventListener("change", ()=> setDesignReferenceRole(Number(sel.dataset.designReferenceRole), sel.value));
+    });
     const analyzeDesignReferenceBtn = document.getElementById("analyze-design-reference-btn");
     if(analyzeDesignReferenceBtn) analyzeDesignReferenceBtn.addEventListener("click", analyzeDesignReference);
+    const clearCardLayoutPresetsBtn = document.querySelector("[data-clear-card-layout-presets]");
+    if(clearCardLayoutPresetsBtn) clearCardLayoutPresetsBtn.addEventListener("click", async ()=>{
+      state.cardLayoutPresets = null;
+      await saveCardLayoutPresets();
+      render();
+    });
     const saveCardNewsSettingsBtn = document.getElementById("save-cardnews-settings-btn");
     if(saveCardNewsSettingsBtn) saveCardNewsSettingsBtn.addEventListener("click", async ()=>{
       await applyCardNewsSettingsFromForm();

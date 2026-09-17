@@ -4,13 +4,17 @@
 
 이 문서는 2026-09-10에 실제 생성된 카드 4장(표지·본문 2종·CTA)을 리뷰하고 발견된 문제를 고친 뒤 작성됐습니다.
 
-## 레퍼런스 디자인으로 학습 (2026-09-14 추가)
+## 레퍼런스 디자인으로 학습 (2026-09-14 추가, 2026-09-17 레이아웃·분량·다중 이미지로 확장)
 
-"카드뉴스 설정" 패널 맨 위에 참고 이미지를 올리면 AI가 색상·분위기를 분석해서 색상 프리셋과 스타일 프롬프트를 자동으로 채워주는 기능. **실제 모델을 파인튜닝/재학습시키는 게 아님** — Claude Vision에게 이미지를 보여주고 관찰한 걸 구조화된 JSON으로 받아서 기존 설정 필드에 대입하는 방식.
+"카드뉴스 설정" 패널 맨 위에 참고 이미지를 올리면 AI가 (1) 색상·분위기 (2) 요소 위치·크기 비율(레이아웃) (3) 헤드라인 글자 수·본문 줄 수 같은 글자 분량까지 분석해서 상태에 채워주는 기능. **실제 모델을 파인튜닝/재학습시키는 게 아님** — Claude Vision에게 이미지를 보여주고 관찰한 걸 구조화된 JSON으로 받아서 기존 설정 필드에 대입하는 방식.
 
-- `analyzeDesignReference()`가 참고 이미지(최대 3장, `downscaleImageForLibrary`로 압축)를 `callBackendAI(prompt, false, 900, images)`에 넘기고, `extractJSONBlock()`으로 `{coverBg, coverText, contentBg, contentText, ctaBg, ctaText, accent, styleNote}` 형태의 응답을 파싱함.
-- 색상은 `state.cardColorPresets`에, `styleNote`는 `state.cardNewsPrompt` 앞에 `[레퍼런스 디자인 분석]` 표시를 붙여 이어붙임(기존에 써둔 프롬프트를 지우지 않음).
-- **새 저장소를 안 만들고 기존 템플릿 시스템에 얹은 구조** — 분석 후에는 그냥 기존 "현재 설정을 템플릿으로 저장" 버튼으로 이어서 템플릿화하면 됨. 색상/프롬프트가 이미 폼에 반영된 상태라 그 버튼이 그대로 동작함.
+- 레퍼런스 이미지는 여러 장(최대 `DESIGN_REFERENCE_MAX_IMAGES`=12장) 넣을 수 있고, 표지·본문·CTA를 섞어 넣어도 됨. 각 썸네일 아래 역할 선택(`data-design-reference-role`, 값은 `auto`/`cover`/`content`/`cta`)이 있어서, 사용자가 직접 태그해두면 그 역할을 그대로 확정하고(AI 응답 role을 덮어씀), "자동 판별"로 두면 AI가 이미지의 시각적 특징(큰 타이틀=표지, 연락처/강조박스=CTA 등)으로 판단함.
+- 서버(`api/ai.js`)가 한 번의 AI 호출에 이미지 4장까지만 허용하므로(`DESIGN_REFERENCE_BATCH_SIZE`), `analyzeDesignReference()`는 이미지를 4장 단위 배치로 나눠 여러 번 `callBackendAI()`를 호출하고 결과(`{overallStyleNote, results:[...]}`)를 순서대로 모은 뒤 `mergeDesignReferenceAnalysis()`로 합침.
+- `results[i]`는 이미지 1장당 `{role, coverBg/coverText/contentBg/contentText/ctaBg/ctaText(해당 role만 채움), accent, headline:{xPct,yPct,fontSizeRatio,align}, subtext:{...}, hasVisual, visual:{yPct,heightRatio,widthRatio}|null, textLength:{headlineChars,subtextLines,style}}` 형태.
+- `mergeDesignReferenceAnalysis()`가 role(cover/content/cta)별로 결과를 묶어서: 색상은 `averageHexColors()`로 hex 평균(→ `state.cardColorPresets`), 위치·크기·정렬은 `averageNumbers()`/`pickMostCommon()`으로 평균·다수결(→ `state.cardLayoutPresets[role]`). `overallStyleNote`들은 이어붙여서 `state.cardNewsPrompt` 앞에 `[레퍼런스 디자인 분석]` 표시를 붙여 이어붙임(기존에 써둔 프롬프트를 지우지 않음).
+- **`state.cardLayoutPresets`**: `{cover, content, cta}` 각각 `{headline:{x,y,scale,align}, subtext:{x,y,scale,align}, hasVisual, visual:{y,hFrac,wFrac}|null, textLength:{headlineChars,subtextLines,style}, sampleCount}`. `generateCardNewsScript()`가 슬라이드를 새로 만들 때, 슬라이드 역할(`cardRoleForIndex()`)에 해당하는 프리셋이 있으면 그 `x/y/scale/align`을 헤드라인·본문·이미지자리 레이어에 그대로 쓰고(`layer.x/y`는 원래부터 %, `layer.scale`은 원래부터 배율이라 기존 레이어 스키마와 그대로 호환됨), 없으면 기존 `computeInitialSlideLayout()`의 동적 밴드 중앙 정렬 계산을 그대로 씀 — **레이아웃을 안 배우면 기존 동작과 100% 동일**.
+- `layoutTextLengthPromptBlock()`이 role별 `textLength`(헤드라인 글자 수·본문 줄 수·리스트/문단 여부)를 `generateCardNewsScript()` 프롬프트에 `[레퍼런스 디자인에서 학습한 분량 - 최대한 맞출 것]` 블록으로 추가함 — 기존 `[분량 기준]`(컴팩트/보통/풍성) 지시와 별개로, 학습된 값이 있을 때만 덧붙는 지시.
+- **새 저장소를 안 만들고 기존 템플릿 시스템에 얹은 구조** — 분석 후에는 그냥 기존 "현재 설정을 템플릿으로 저장" 버튼으로 이어서 템플릿화하면 됨(`cardNewsTemplates` 스키마에 `layoutPresets` 필드만 추가, `mkt:cardLayoutPresets` 키로 팀 공용 KV에 별도 저장). 패널에 "학습된 레이아웃 지우기" 링크가 있어서 `state.cardLayoutPresets`만 `null`로 되돌릴 수 있음(색상·프롬프트는 안 건드림).
 - **백엔드(`api/ai.js`)에 비전 지원 추가**: body에 `images: [{mediaType, data}]`(순수 base64, data URL 접두어 제외)를 실으면 Anthropic 메시지의 `content`를 배열로 바꿔서 이미지 블록 + 텍스트 블록으로 구성함. 이미지 없는 기존 호출(텍스트만)은 그대로 문자열 content를 씀 — 기존 호출부는 전혀 안 건드림. 이미지는 요청당 최대 4장으로 서버에서 제한.
 - 클라이언트의 `dataUrlToVisionImage(dataUrl)`가 `data:image/jpeg;base64,...` 형식을 `{mediaType, data}`로 분해해줌.
 
