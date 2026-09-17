@@ -243,7 +243,12 @@ module.exports = async (req, res) => {
     const data = await response.json();
     if (!response.ok) {
       const msg = (data && data.message) || "Notion API 요청이 실패했어요.";
-      res.status(response.status).json({ error: msg });
+      // Notion이 401/403(예: NOTION_API_KEY 오류·권한 문제)을 돌려줘도 그대로 전달하면,
+      // 프론트엔드가 이 앱의 "로그인 만료"로 오인해서 로그인 화면으로 튕겨버린다(프론트는
+      // 모든 fetch에서 res.status===401을 우리 앱 세션 만료로만 해석함). 실제로는 우리 앱
+      // 로그인과 무관하므로 502로 통일해서 내려주고, 원인 메시지는 그대로 보여준다.
+      const status = response.status === 401 || response.status === 403 ? 502 : response.status;
+      res.status(status).json({ error: msg });
       return;
     }
 

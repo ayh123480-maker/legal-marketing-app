@@ -67,7 +67,12 @@ module.exports = async (req, res) => {
     const data = await response.json();
     if (!response.ok) {
       const msg = (data && data.error && data.error.message) || "Anthropic API 요청이 실패했어요.";
-      res.status(response.status).json({ error: msg });
+      // Anthropic이 401/403(예: ANTHROPIC_API_KEY 누락·오류·크레딧 문제)을 돌려줘도 그대로
+      // 전달하면, 프론트엔드가 "이 앱 로그인이 만료됐다"로 오인해서 로그인 화면으로 튕겨버린다
+      // (프론트는 모든 fetch에서 res.status===401을 "우리 앱 세션 만료"로만 해석함).
+      // 실제 로그인 문제가 아니므로 502로 통일해서 내려주고, 원인 메시지는 그대로 보여준다.
+      const status = response.status === 401 || response.status === 403 ? 502 : response.status;
+      res.status(status).json({ error: msg });
       return;
     }
     const textBlocks = (data.content || [])
