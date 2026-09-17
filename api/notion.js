@@ -14,8 +14,11 @@ const { kv } = require("@vercel/kv");
  *    실제 Notion API 키는 서버 환경변수(NOTION_API_KEY) 안에만 존재하고,
  *    새 페이지는 NOTION_PARENT_PAGE_ID로 지정한 페이지 아래 하위 페이지로 생성된다.
  *    body: { title: string, body: string, subtitle?: string, keyPoints?: string[], tags?: string[],
- *             structured?: { introduction: string, sections: [{heading,paragraphs,bullets,callout}], conclusion: string },
+ *             structured?: { introduction: string, sections: [{heading,paragraphs,bullets,ordered?,callout?,quote?}], conclusion: string },
  *             extraSections?: [{ heading?: string, paragraphs?: string[], bullets?: string[] }] }
+ *      section.ordered가 true면 bullets를 numbered_list_item으로(순서가 의미 있는 절차),
+ *      아니면 bulleted_list_item으로 올린다. section.quote는 원문 실제 인용구가 있을 때만
+ *      quote 블록으로 올린다.
  *      structured가 있으면(2026-09-16 칼럼 품질 개선 이후 생성된 결과) 소제목/목록/콜아웃으로
  *      매핑해서 올리고, 없으면(레거시 프로젝트 등) body를 문단 단위로만 분리해서 올린다(하위 호환).
  *      extraSections는 본문 뒤에 구분선과 함께 추가로 덧붙는 섹션들 (예: 릴스 대본)
@@ -48,6 +51,9 @@ function paragraphBlock(text) {
 function bulletBlock(text) {
   return { object: "block", type: "bulleted_list_item", bulleted_list_item: { rich_text: richText(text) } };
 }
+function numberedBlock(text) {
+  return { object: "block", type: "numbered_list_item", numbered_list_item: { rich_text: richText(text) } };
+}
 function headingBlock(level, text) {
   const type = "heading_" + level;
   return { object: "block", type, [type]: { rich_text: richText(text) } };
@@ -57,6 +63,9 @@ function calloutBlock(text) {
     object: "block", type: "callout",
     callout: { rich_text: richText(text), icon: { type: "emoji", emoji: "💡" } },
   };
+}
+function quoteBlock(text) {
+  return { object: "block", type: "quote", quote: { rich_text: richText(text) } };
 }
 function dividerBlock() {
   return { object: "block", divider: {}, type: "divider" };
@@ -68,10 +77,11 @@ function pushParagraphs(children, paragraphs) {
     if (trimmed) children.push(paragraphBlock(trimmed));
   });
 }
-function pushBullets(children, bullets) {
+// ordered가 true면(순서가 의미 있는 절차) numbered_list_item, 아니면 bulleted_list_item으로 매핑
+function pushBullets(children, bullets, ordered) {
   (Array.isArray(bullets) ? bullets : []).forEach((b) => {
     const trimmed = String(b || "").trim();
-    if (trimmed) children.push(bulletBlock(trimmed));
+    if (trimmed) children.push(ordered ? numberedBlock(trimmed) : bulletBlock(trimmed));
   });
 }
 
@@ -80,7 +90,8 @@ function pushBullets(children, bullets) {
  * - subtitle/section.callout은 문서 전체에서 최대 2개까지만 실제 callout 블록으로
  *   만들고, 그 이상은 강조 표시 없는 일반 paragraph로 낮춘다(콜아웃 남발 방지).
  * - keyPoints는 heading_3 "핵심 포인트" + bulleted_list_item.
- * - sections[].heading -> heading_2, paragraphs -> paragraph, bullets -> bulleted_list_item.
+ * - sections[].heading -> heading_2, paragraphs -> paragraph, bullets -> bulleted_list_item
+ *   (section.ordered가 true면 numbered_list_item), quote -> quote 블록.
  * - tags는 맨 아래 divider + paragraph로 정리.
  */
 function buildStructuredChildren({ subtitle, keyPoints, structured, tags }) {
@@ -115,7 +126,8 @@ function buildStructuredChildren({ subtitle, keyPoints, structured, tags }) {
     if (!section) return;
     if (section.heading) children.push(headingBlock(2, section.heading));
     pushParagraphs(children, section.paragraphs);
-    pushBullets(children, section.bullets);
+    if (section.quote) children.push(quoteBlock(section.quote));
+    pushBullets(children, section.bullets, section.ordered);
     if (section.callout) pushCallout(section.callout);
   });
 

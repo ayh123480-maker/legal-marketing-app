@@ -3058,14 +3058,16 @@ function buildColumnOutputContract(){
   "subtitle": "부제 또는 한 줄 요약 (없으면 빈 문자열)",
   "introduction": "도입 문단(들). 문단이 여러 개면 \\n\\n으로 구분",
   "sections": [
-    { "heading": "소제목", "paragraphs": ["문단1", "문단2"], "bullets": ["필요할 때만, 없으면 빈 배열"], "callout": "정말 강조할 내용이 있을 때만 — 없으면 빈 문자열" }
+    { "heading": "소제목", "paragraphs": ["문단1", "문단2"], "bullets": ["필요할 때만, 없으면 빈 배열"], "ordered": false, "callout": "정말 강조할 내용이 있을 때만 — 없으면 빈 문자열", "quote": "원문에 실제로 있는 인용구를 그대로 옮길 때만 — 없으면 빈 문자열" }
   ],
   "keyPoints": ["핵심 포인트 1", "핵심 포인트 2", "핵심 포인트 3"],
   "conclusion": "결론 문단(들)",
   "tags": ["태그1", "태그2", "태그3"]
 }
 
-sections는 2~5개로 구성해. callout은 문서 전체에서 정말 강조가 필요할 때만 최대 1~2개 섹션에만 쓰고, 대부분의 섹션은 callout 없이 paragraphs/bullets만 써.`;
+sections는 2~5개로 구성해. callout은 문서 전체에서 정말 강조가 필요할 때만 최대 1~2개 섹션에만 쓰고, 대부분의 섹션은 callout 없이 paragraphs/bullets만 써.
+bullets가 "순서대로 따라야 하는 절차/단계"일 때만 ordered를 true로 해(신청 순서, 준비 단계처럼 순서가 바뀌면 의미가 달라지는 경우) — 단순 나열이면 ordered를 넣지 말거나 false로 둬.
+quote는 원문에 실제로 있는 문장을 그대로 인용할 때만 채워. 원문에 없는 말을 인용문처럼 지어내지 마 — 애매하면 비워둬.`;
 }
 
 /* 문자열 앞뒤에 설명이나 마크다운 코드블록이 붙어도, 괄호 깊이를 직접 세어서
@@ -3145,9 +3147,11 @@ function parseStructuredColumnResponse(raw){
     const heading = String(s.heading || "").trim();
     const paragraphs = coerceParagraphs(s.paragraphs);
     const bullets = coerceStringArray(s.bullets, /\n+/);
+    const ordered = bullets.length > 0 && (s.ordered === true || s.ordered === "true");
     const callout = String(s.callout || "").trim();
-    if(!heading && !paragraphs.length && !bullets.length && !callout) return null;
-    return { heading, paragraphs, bullets, callout };
+    const quote = String(s.quote || "").trim();
+    if(!heading && !paragraphs.length && !bullets.length && !callout && !quote) return null;
+    return { heading, paragraphs, bullets, ordered, callout, quote };
   }).filter(Boolean);
 
   if(!title || (!introduction && !sections.length && !conclusion)){
@@ -3161,7 +3165,10 @@ function parseStructuredColumnResponse(raw){
   sections.forEach(sec=>{
     if(sec.heading) bodyParts.push(sec.heading);
     if(sec.paragraphs.length) bodyParts.push(sec.paragraphs.join("\n\n"));
-    if(sec.bullets.length) bodyParts.push(sec.bullets.map(b=>"- "+b).join("\n"));
+    if(sec.bullets.length){
+      bodyParts.push(sec.bullets.map((b,i)=> (sec.ordered ? (i+1)+". " : "- ") + b).join("\n"));
+    }
+    if(sec.quote) bodyParts.push(`"${sec.quote}"`);
     if(sec.callout) bodyParts.push(sec.callout);
   });
   if(conclusion) bodyParts.push(conclusion);
